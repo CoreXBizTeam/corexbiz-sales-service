@@ -1,0 +1,16 @@
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+
+# Local SQLite database
+*.db
+*.db-shm
+*.db-wal
+
+# Generated output
+output/
+output_bc/
+output.csv
