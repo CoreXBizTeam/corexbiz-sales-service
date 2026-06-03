@@ -48,6 +48,15 @@ PY
 }
 
 apply_sales_env_defaults() {
+  local root
+  root="$(cd "${1:-${ROOT:-.}}" && pwd)"
+  export ROOT="$root"
+
+  # Auto-load .env when apply_sales_env_defaults is called without a prior load_sales_env.
+  if [ -f "${root}/.env" ] && [ -z "${GOOGLE_MAPS_API_KEY:-}" ]; then
+    load_sales_env "$root"
+  fi
+
   export COREX_SALES_SERVICE_ENV="${COREX_SALES_SERVICE_ENV:-local}"
   export POSTGRES_HOST="${POSTGRES_HOST:-${CLOUD_SQL_PROXY_HOST:-127.0.0.1}}"
   export POSTGRES_PORT="${POSTGRES_PORT:-${CLOUD_SQL_PROXY_PORT:-5432}}"
@@ -65,6 +74,7 @@ apply_sales_env_defaults() {
   if [ -z "${GOOGLE_MAPS_API_KEY:-}" ]; then
     echo "warning: GOOGLE_MAPS_API_KEY not set — Google Maps lead runs will fail" >&2
     echo "  Add your key to ${root}/.env (Places API must be enabled in Google Cloud)" >&2
+    echo "  Tip: run load_sales_env \"${root}\" after sourcing scripts/load-env.sh" >&2
   fi
 
   if [ -z "${DATABASE_URL:-}" ] && [ -n "${POSTGRES_PASSWORD:-}" ]; then

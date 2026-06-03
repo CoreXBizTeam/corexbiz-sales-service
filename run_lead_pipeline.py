@@ -26,12 +26,15 @@ DEFAULT_DB = ROOT / "corex_leads.db"
 DEFAULT_CITIES = ROOT / "cities.csv"
 RUNS_DIR = ROOT / "runs"
 
-from dotenv import load_dotenv
-
-load_dotenv(ROOT / ".env")
-
 sys.path.insert(0, str(ROOT))
+from src.config.env import load_project_env, subprocess_environ
 from src.log import configure_logging, get_logger, log_action
+from src.pipeline.google_maps_criteria import (
+    build_google_maps_finder_plan,
+    write_queries_json,
+)
+
+load_project_env()
 
 configure_logging()
 logger = get_logger("pipeline")
@@ -56,37 +59,73 @@ def _filter_cities(cities_path: Path, provinces: List[str], out_path: Path) -> N
 
 
 def _run_google_maps(
-    criteria: Dict[str, Any], raw_csv: Path, db: str, *, run_id: str = ""
+    criteria: Dict[str, Any],
+    raw_csv: Path,
+    db: str,
+    *,
+    run_id: str = "",
+    list_name: str = "",
 ) -> None:
     from src.config.env import google_maps_configured, google_maps_config_error
 
+    load_project_env()
     if not google_maps_configured():
         err = google_maps_config_error()
         raise RuntimeError(err["message"])
-    cities_file = Path(criteria.get("cities_file") or DEFAULT_CITIES)
-    if not cities_file.is_absolute():
-        cities_file = ROOT / cities_file
-    provinces = criteria.get("provinces") or []
+
+    plan = build_google_maps_finder_plan(
+        criteria,
+        root=ROOT,
+        work_dir=raw_csv.parent,
+        default_cities=DEFAULT_CITIES,
+        list_name=list_name,
+    )
+    cities_file = plan.cities_csv
+    provinces = plan.provinces or []
     seed = raw_csv.parent / "seed_cities.csv"
-    if provinces:
-        _filter_cities(cities_file, provinces, seed)
+    if provinces and not plan.geo_center:
+        base = Path(str(criteria.get("cities_file") or DEFAULT_CITIES))
+        if not base.is_absolute():
+            base = ROOT / base
+        _filter_cities(base, provinces, seed)
         cities_arg = str(seed)
     else:
         cities_arg = str(cities_file)
+
+    queries_path = raw_csv.parent / "finder_queries.json"
+    if plan.query_templates:
+        write_queries_json(queries_path, plan.query_templates)
+
     enriched_csv = raw_csv.parent / "leads_enriched.csv"
     py = sys.executable
+    cmd = [py, str(ROOT / "finder_places.py"), cities_arg, str(raw_csv), "--db", db]
+    if plan.query_templates:
+        cmd.extend(["--queries-json", str(queries_path)])
+    if plan.geocode_bias and plan.geo_center and plan.geo_radius_meters:
+        cmd.extend(
+            [
+                "--geo-center",
+                plan.geo_center,
+                "--geo-radius-m",
+                str(plan.geo_radius_meters),
+            ]
+        )
+
     log_action(
         logger,
         logging.INFO,
         "RUN",
         f"run/{run_id}" if run_id else "stage/finder",
-        {"stage": "finder", "cities": cities_arg, "output": str(raw_csv)},
+        {
+            "stage": "finder",
+            "cities": cities_arg,
+            "output": str(raw_csv),
+            "geo_center": plan.geo_center,
+            "queries": len(plan.query_templates) or "default",
+        },
         traces=[("start", "finder_places.py")],
     )
-    subprocess.check_call(
-        [py, str(ROOT / "finder_places.py"), cities_arg, str(raw_csv), "--db", db],
-        cwd=str(ROOT),
-    )
+    subprocess.check_call(cmd, cwd=str(ROOT), env=subprocess_environ())
     log_action(
         logger,
         logging.INFO,
@@ -113,6 +152,7 @@ def _run_google_maps(
             db,
         ],
         cwd=str(ROOT),
+        env=subprocess_environ(),
     )
     log_action(
         logger,
@@ -143,6 +183,7 @@ def _run_manual_csv(criteria: Dict[str, Any], raw_csv: Path, db: str) -> None:
             db,
         ],
         cwd=str(ROOT),
+        env=subprocess_environ(),
     )
 
 
@@ -157,7 +198,7 @@ def _run_custom_script(criteria: Dict[str, Any], raw_csv: Path, db: str) -> None
     cmd = [py, str(script), "--out", str(raw_csv)]
     if extra:
         cmd.extend(extra.split())
-    subprocess.check_call(cmd, cwd=str(ROOT))
+    subprocess.check_call(cmd, cwd=str(ROOT), env=subprocess_environ())
     enriched_csv = raw_csv.parent / "leads_enriched.csv"
     subprocess.check_call(
         [
@@ -169,6 +210,7 @@ def _run_custom_script(criteria: Dict[str, Any], raw_csv: Path, db: str) -> None
             db,
         ],
         cwd=str(ROOT),
+        env=subprocess_environ(),
     )
 
 
@@ -202,7 +244,13 @@ def main() -> int:
     )
 
     if source_type == "google_maps":
-        _run_google_maps(criteria, raw_csv, db, run_id=run_id)
+        _run_google_maps(
+            criteria,
+            raw_csv,
+            db,
+            run_id=run_id,
+            list_name=str(config.get("list_name") or ""),
+        )
     elif source_type == "manual_csv":
         _run_manual_csv(criteria, raw_csv, db)
     elif source_type == "custom_script":

@@ -37,13 +37,21 @@ DEPENDENCIES
 from __future__ import annotations
 
 import csv
+import json
 import os
 import re
 import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, MutableMapping, Optional, Tuple
+
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+from src.config.env import load_project_env
+
+load_project_env()
 
 import googlemaps
 from googlemaps.exceptions import ApiError
@@ -192,10 +200,38 @@ class QuotaExceeded(Exception):
 
 
 def load_api_key() -> str:
+    load_project_env()
     api_key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not api_key:
         raise SystemExit("Missing GOOGLE_MAPS_API_KEY environment variable.")
     return api_key.strip()
+
+
+def geocode_center(
+    client: googlemaps.Client, address: str
+) -> Optional[Tuple[float, float]]:
+    """Return lat/lng for an address, or None if Geocoding API is unavailable."""
+    try:
+        resp = client.geocode(address)
+    except ApiError as exc:
+        status = getattr(exc, "status", None) or str(exc)
+        print(
+            f"  ! Geocode skipped ({status}): using address-in-query search instead. "
+            "Enable Geocoding API on your key for tighter radius bias."
+        )
+        return None
+    if not resp:
+        print(f"  ! Could not geocode {address!r}; using address-in-query search instead.")
+        return None
+    loc = resp[0]["geometry"]["location"]
+    return float(loc["lat"]), float(loc["lng"])
+
+
+def load_query_templates(path: str) -> List[str]:
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(raw, list):
+        raise SystemExit("--queries-json must contain a JSON array of query strings.")
+    return [str(q).strip() for q in raw if str(q).strip()]
 
 
 def read_cities_csv(path: str) -> List[CitySeed]:
@@ -342,7 +378,13 @@ def _place_details(client: googlemaps.Client, place_id: str, fields: List[str]) 
         }
 
 
-def fetch_text_search_pages(client: googlemaps.Client, query: str) -> List[dict]:
+def fetch_text_search_pages(
+    client: googlemaps.Client,
+    query: str,
+    *,
+    location: Optional[Tuple[float, float]] = None,
+    radius: Optional[int] = None,
+) -> List[dict]:
     """Run Text Search and follow next_page_token up to Google's page limit.
 
     Does not raise: a failed query returns [] so the rest of cities/queries still run.
@@ -352,7 +394,12 @@ def fetch_text_search_pages(client: googlemaps.Client, query: str) -> List[dict]
     - On INVALID_REQUEST, retry a few times with short delays, then skip that page only.
     """
     all_results: List[dict] = []
-    resp = _places_search(client, query=query, region=PLACES_REGION)
+    search_kwargs: Dict[str, object] = {"query": query, "region": PLACES_REGION}
+    if location is not None:
+        search_kwargs["location"] = location
+    if radius is not None:
+        search_kwargs["radius"] = radius
+    resp = _places_search(client, **search_kwargs)
     st = resp.get("status")
     if st == "ZERO_RESULTS":
         return all_results
@@ -599,22 +646,35 @@ def run_finder_for_seeds(
     output_path: str,
     max_output_rows: int,
     db_conn: Optional[object] = None,
+    *,
+    query_templates: Optional[List[str]] = None,
+    location_bias: Optional[Tuple[float, float]] = None,
+    radius_meters: Optional[int] = None,
 ) -> int:
     """Execute the finder loop for `seeds`, write `output_path`, return unique row count."""
     detail_cache: Dict[str, dict] = {}
     collected: List[Dict[str, str]] = []
     total_n = len(seeds)
     reached_cap = False
+    templates = query_templates or SEARCH_QUERY_TEMPLATES
 
     for idx, seed in enumerate(seeds, start=1):
         prov_disp = seed.province or "?"
         print(f"[{idx}/{total_n}] Searching {seed.city}, {prov_disp}")
 
         city_hits = 0
-        for template in SEARCH_QUERY_TEMPLATES:
-            query = template.format(city=seed.city, province=seed.province)
+        for template in templates:
+            if "{city}" in template or "{province}" in template:
+                query = template.format(city=seed.city, province=seed.province)
+            else:
+                query = template
             try:
-                hits = fetch_text_search_pages(client, query)
+                hits = fetch_text_search_pages(
+                    client,
+                    query,
+                    location=location_bias,
+                    radius=radius_meters,
+                )
             except Exception as exc:
                 print(f"  ! Query failed ({query[:40]}...): {exc}")
                 continue
@@ -814,6 +874,36 @@ def _seeds_by_province(all_seeds: List[CitySeed]) -> Tuple[Dict[str, List[CitySe
     return groups, skipped
 
 
+def _parse_finder_options(argv: List[str]) -> Tuple[List[str], Optional[str], Optional[str], Optional[int]]:
+    """Strip optional --queries-json / --geo-center / --geo-radius-m flags."""
+    queries_json: Optional[str] = None
+    geo_center: Optional[str] = None
+    geo_radius_m: Optional[int] = None
+    rest: List[str] = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--queries-json" and i + 1 < len(argv):
+            queries_json = argv[i + 1]
+            i += 2
+            continue
+        if arg == "--geo-center" and i + 1 < len(argv):
+            geo_center = argv[i + 1]
+            i += 2
+            continue
+        if arg == "--geo-radius-m" and i + 1 < len(argv):
+            try:
+                geo_radius_m = int(argv[i + 1])
+            except ValueError:
+                print("Error: --geo-radius-m must be an integer.")
+                raise SystemExit(1)
+            i += 2
+            continue
+        rest.append(arg)
+        i += 1
+    return rest, queries_json, geo_center, geo_radius_m
+
+
 def main() -> int:
     argv = sys.argv[1:]
     import db as dbmod
@@ -834,6 +924,8 @@ def main() -> int:
             print("Error: --daily-limit must be at least 1.")
             return 1
         argv = argv[:-2]
+
+    argv, queries_json, geo_center, geo_radius_m = _parse_finder_options(argv)
 
     if len(argv) == 3 and argv[0] == "--all-provinces":
         cities_path = argv[1]
@@ -867,6 +959,15 @@ def main() -> int:
         return 1
 
     client = googlemaps.Client(key=api_key)
+
+    query_templates = load_query_templates(queries_json) if queries_json else None
+    location_bias: Optional[Tuple[float, float]] = None
+    if geo_center:
+        location_bias = geocode_center(client, geo_center)
+        if location_bias is not None:
+            print(f"Geo bias: {geo_center} → {location_bias[0]:.5f}, {location_bias[1]:.5f}")
+            if geo_radius_m:
+                print(f"Search radius: {geo_radius_m} m")
 
     if db_path:
         dbmod.init_db(db_path)
@@ -953,6 +1054,9 @@ def main() -> int:
             output_path,
             max_output_rows=MAX_OUTPUT_ROWS,
             db_conn=db_conn,
+            query_templates=query_templates,
+            location_bias=location_bias,
+            radius_meters=geo_radius_m,
         )
     finally:
         if db_conn is not None:

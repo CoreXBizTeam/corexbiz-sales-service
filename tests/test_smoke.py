@@ -98,6 +98,7 @@ class TestCLI(unittest.TestCase):
     def test_finder_missing_api_key(self) -> None:
         env = os.environ.copy()
         env.pop("GOOGLE_MAPS_API_KEY", None)
+        env["SALES_DISABLE_DOTENV"] = "1"
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as out:
             out_path = out.name
         try:

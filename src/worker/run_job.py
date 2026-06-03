@@ -67,7 +67,9 @@ def _build_pipeline_config(run: Dict[str, Any]) -> Dict[str, Any]:
 
 def _subprocess_traces(proc: subprocess.CompletedProcess[str]) -> List[Trace]:
     traces: List[Trace] = [(proc.returncode, "pipeline subprocess exited")]
-    combined = "\n".join(part for part in (proc.stderr, proc.stdout) if part).strip()
+    combined = _sanitize_pipeline_output(
+        "\n".join(part for part in (proc.stderr, proc.stdout) if part).strip()
+    )
     if not combined:
         return traces
     for line in combined.splitlines()[-12:]:
@@ -75,6 +77,35 @@ def _subprocess_traces(proc: subprocess.CompletedProcess[str]) -> List[Trace]:
         if stripped:
             traces.append(("out", stripped))
     return traces
+
+
+def _sanitize_pipeline_output(text: str) -> str:
+    """Drop noisy stderr (e.g. urllib3 LibreSSL warnings) from stored run errors."""
+    kept: List[str] = []
+    for line in text.splitlines():
+        if "NotOpenSSLWarning" in line:
+            continue
+        if line.strip().startswith("warnings.warn("):
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def _pipeline_error_message(proc: subprocess.CompletedProcess[str]) -> str:
+    combined = _sanitize_pipeline_output(
+        "\n".join(part for part in (proc.stderr, proc.stdout) if part).strip()
+    )
+    if not combined:
+        return "pipeline failed"
+    for line in reversed(combined.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if "ApiError:" in stripped or "RuntimeError:" in stripped or "Error:" in stripped:
+            return stripped[:2000]
+        if stripped.startswith("Command "):
+            continue
+    return combined[:2000]
 
 
 def _pipeline_output_logging_enabled() -> bool:
@@ -86,8 +117,11 @@ def _pipeline_output_logging_enabled() -> bool:
 
 
 def _run_pipeline_command(cmd: List[str], *, run_id: str) -> subprocess.CompletedProcess[str]:
+    from src.config.env import subprocess_environ
+
+    env = subprocess_environ()
     if not _pipeline_output_logging_enabled():
-        return subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
+        return subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, env=env)
 
     log_run_progress(
         run_id,
@@ -101,6 +135,7 @@ def _run_pipeline_command(cmd: List[str], *, run_id: str) -> subprocess.Complete
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env=env,
     )
     lines: List[str] = []
     assert proc.stdout is not None
@@ -163,7 +198,7 @@ def run_pipeline_subprocess(config: Dict[str, Any], sqlite_path: Path) -> None:
             traces=_subprocess_traces(proc),
             level=logging.ERROR,
         )
-        err = (proc.stderr or proc.stdout or "pipeline failed").strip()
+        err = _pipeline_error_message(proc)
         raise RuntimeError(err[:2000])
 
     log_run_progress(
@@ -222,6 +257,9 @@ def execute_run(run: Dict[str, Any], *, sqlite_path: Optional[Path] = None) -> D
 
     Returns summary dict with status and sync counts.
     """
+    from src.config.env import load_project_env
+
+    load_project_env()
     from src.db.pool import get_pool
     from src.db import repository as repo
     from src.worker.sync_sqlite import init_empty_sqlite, sync_sqlite_to_postgres
@@ -342,9 +380,9 @@ def execute_run(run: Dict[str, Any], *, sqlite_path: Optional[Path] = None) -> D
 def main(argv: Optional[list[str]] = None) -> int:
     import argparse
 
-    from dotenv import load_dotenv
+    from src.config.env import load_project_env
 
-    load_dotenv(ROOT / ".env")
+    load_project_env()
     configure_logging()
 
     parser = argparse.ArgumentParser(description="Execute one sales pipeline run")

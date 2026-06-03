@@ -9,15 +9,13 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 _ROOT = Path(__file__).resolve().parents[2]
-load_dotenv(_ROOT / ".env")
-_cloud = os.getenv("CLOUD_SQL_ENV", "/Users/tobymalek/corexbiz/cloud-sql/env.local")
-if os.path.isfile(_cloud):
-    load_dotenv(_cloud, override=False)
+from src.config.env import load_project_env
+
+load_project_env()
 
 from src.log import configure_logging, get_logger, log_action
 
