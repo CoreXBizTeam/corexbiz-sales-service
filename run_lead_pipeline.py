@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import shutil
 import subprocess
 import sys
@@ -24,6 +25,16 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_DB = ROOT / "corex_leads.db"
 DEFAULT_CITIES = ROOT / "cities.csv"
 RUNS_DIR = ROOT / "runs"
+
+from dotenv import load_dotenv
+
+load_dotenv(ROOT / ".env")
+
+sys.path.insert(0, str(ROOT))
+from src.log import configure_logging, get_logger, log_action
+
+configure_logging()
+logger = get_logger("pipeline")
 
 
 def _filter_cities(cities_path: Path, provinces: List[str], out_path: Path) -> None:
@@ -44,7 +55,14 @@ def _filter_cities(cities_path: Path, provinces: List[str], out_path: Path) -> N
         w.writerows(rows)
 
 
-def _run_google_maps(criteria: Dict[str, Any], raw_csv: Path, db: str) -> None:
+def _run_google_maps(
+    criteria: Dict[str, Any], raw_csv: Path, db: str, *, run_id: str = ""
+) -> None:
+    from src.config.env import google_maps_configured, google_maps_config_error
+
+    if not google_maps_configured():
+        err = google_maps_config_error()
+        raise RuntimeError(err["message"])
     cities_file = Path(criteria.get("cities_file") or DEFAULT_CITIES)
     if not cities_file.is_absolute():
         cities_file = ROOT / cities_file
@@ -57,9 +75,33 @@ def _run_google_maps(criteria: Dict[str, Any], raw_csv: Path, db: str) -> None:
         cities_arg = str(cities_file)
     enriched_csv = raw_csv.parent / "leads_enriched.csv"
     py = sys.executable
+    log_action(
+        logger,
+        logging.INFO,
+        "RUN",
+        f"run/{run_id}" if run_id else "stage/finder",
+        {"stage": "finder", "cities": cities_arg, "output": str(raw_csv)},
+        traces=[("start", "finder_places.py")],
+    )
     subprocess.check_call(
         [py, str(ROOT / "finder_places.py"), cities_arg, str(raw_csv), "--db", db],
         cwd=str(ROOT),
+    )
+    log_action(
+        logger,
+        logging.INFO,
+        "RUN",
+        f"run/{run_id}" if run_id else "stage/finder",
+        {"stage": "finder", "output": str(raw_csv)},
+        traces=[("done", "finder_places.py")],
+    )
+    log_action(
+        logger,
+        logging.INFO,
+        "RUN",
+        f"run/{run_id}" if run_id else "stage/qualifier",
+        {"stage": "qualifier", "input": str(raw_csv), "output": str(enriched_csv)},
+        traces=[("start", "lead_qualifier.py")],
     )
     subprocess.check_call(
         [
@@ -71,6 +113,14 @@ def _run_google_maps(criteria: Dict[str, Any], raw_csv: Path, db: str) -> None:
             db,
         ],
         cwd=str(ROOT),
+    )
+    log_action(
+        logger,
+        logging.INFO,
+        "RUN",
+        f"run/{run_id}" if run_id else "stage/qualifier",
+        {"stage": "qualifier", "output": str(enriched_csv)},
+        traces=[("done", "lead_qualifier.py")],
     )
 
 
@@ -142,8 +192,17 @@ def main() -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     raw_csv = run_dir / f"{run_id}_raw.csv"
 
+    log_action(
+        logger,
+        logging.INFO,
+        "RUN",
+        f"run/{run_id}",
+        {"source_type": source_type, "list_name": config.get("list_name"), "stage": "pipeline"},
+        traces=[("start", "pipeline job accepted")],
+    )
+
     if source_type == "google_maps":
-        _run_google_maps(criteria, raw_csv, db)
+        _run_google_maps(criteria, raw_csv, db, run_id=run_id)
     elif source_type == "manual_csv":
         _run_manual_csv(criteria, raw_csv, db)
     elif source_type == "custom_script":
@@ -155,6 +214,14 @@ def main() -> int:
     else:
         raise RuntimeError(f"Unknown source_type: {source_type}")
 
+    log_action(
+        logger,
+        logging.INFO,
+        "RUN",
+        f"run/{run_id}",
+        {"output_dir": str(run_dir), "stage": "pipeline"},
+        traces=[("done", "pipeline finished")],
+    )
     print(json.dumps({"run_id": run_id, "output_dir": str(run_dir), "status": "completed"}))
     return 0
 

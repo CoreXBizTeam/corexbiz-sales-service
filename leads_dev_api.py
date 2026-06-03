@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-Minimal read/write dev API for qualified_leads (no schema changes).
+DEPRECATED (Phase 8): use corex-sales-service FastAPI + WordPress REST proxy instead.
 
+This standalone dev server on :8765 is replaced by:
+  - corex-sales-python FastAPI  POST/GET /api/v1/runs  (./scripts/start-local.sh)
+  - corexbiz-core WP REST     /wp-json/corexbiz/v1/sales/*
+
+Kept for emergency local debugging only. Will be removed in a future release.
+
+Original endpoints (legacy):
   GET  /api/leads-bundle
   GET  /api/qualified-leads
-  GET  /api/discovery-status
-  POST /api/run-discovery
-  POST /api/lead-runs  { list_name, source_type, criteria, notes? }
-  PATCH /api/qualified-leads/<id>  { "review_status": "approved"|"rejected"|"pending", "notes": "..." }
-
-Default: http://127.0.0.1:8765
+  ...
 """
 
 from __future__ import annotations
@@ -299,6 +301,11 @@ class LeadsHandler(BaseHTTPRequestHandler):
 def main() -> None:
     if not DB_PATH.exists():
         raise SystemExit(f"Database not found: {DB_PATH}")
+    print(
+        "WARNING: leads_dev_api.py is DEPRECATED (Phase 8). "
+        "Use FastAPI :8080 + WP REST /wp-json/corexbiz/v1/sales/* instead.",
+        file=sys.stderr,
+    )
     server = ThreadingHTTPServer((HOST, PORT), LeadsHandler)
     print(f"Leads dev API on http://{HOST}:{PORT} (db={DB_PATH})")
     server.serve_forever()

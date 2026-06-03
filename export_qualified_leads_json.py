@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Export CoreX Sales SQLite tables to JSON for the CoreXLeads Vue UI.
+DEPRECATED (Phase 8): static JSON export for legacy Vue fallback.
 
-Usage:
-  python export_qualified_leads_json.py
-  python export_qualified_leads_json.py -o ../corexbiz/corexbiz-core/assets/dev/leads.json
-  python export_qualified_leads_json.py -o ../corexbiz/corexbiz-core/corex-leads-review/public/leads.json
+Production flow uses corex-sales-service Postgres + WordPress REST
+(``/wp-json/corexbiz/v1/sales/leads-bundle``). This script remains for
+offline snapshots / debugging only.
+
+Usage (legacy):
+  python export_qualified_leads_json.py -o ../corexbiz-core/assets/dev/leads.json
 """
 
 from __future__ import annotations
