@@ -342,6 +342,8 @@ def execute_run(run: Dict[str, Any], *, sqlite_path: Optional[Path] = None) -> D
             data=counts,
             traces=[("done", "synced to Postgres")],
         )
+        if run_registry.get_run(run_id) is not None:
+            run_registry.remove_run(run_id)
         _dispatch_webhook(
             completed,
             event="run.completed",
@@ -361,6 +363,8 @@ def execute_run(run: Dict[str, Any], *, sqlite_path: Optional[Path] = None) -> D
         )
         failed = _persist_failed_run(run, err)
         summary.update({"status": "failed", "error": err})
+        if run_registry.get_run(run_id) is not None:
+            run_registry.remove_run(run_id)
         _dispatch_webhook(failed, event="run.failed", qualified_count=0)
         raise
     finally:

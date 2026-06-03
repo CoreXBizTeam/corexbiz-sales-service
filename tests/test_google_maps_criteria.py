@@ -69,6 +69,21 @@ class TestGoogleMapsCriteria(unittest.TestCase):
             )
             self.assertEqual(plan.query_templates, ["coffee shop near Burnaby, BC"])
 
+    def test_quick_discovery_uses_default_finder_queries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            criteria = {"cities_file": "cities.csv", "list_name": "Quick discovery"}
+            plan = self.gmc.build_google_maps_finder_plan(
+                criteria,
+                root=ROOT,
+                work_dir=Path(tmp),
+                default_cities=ROOT / "cities.csv",
+                list_name="Quick discovery",
+            )
+            self.assertEqual(plan.cities_csv, ROOT / "cities.csv")
+            self.assertIsNone(plan.geo_center)
+            self.assertFalse(plan.geocode_bias)
+            self.assertEqual(plan.query_templates, [])
+
     def test_default_falls_back_to_cities_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             criteria = {"provinces": ["BC"]}

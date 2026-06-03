@@ -121,6 +121,14 @@ def get_run(
 ) -> RunResponse:
     active = run_registry.get_run(run_id)
     if active is not None and active.get("site_id") == identity.server_id:
+        from src.db.pool import get_pool
+
+        pool = get_pool()
+        with pool.connection() as conn:
+            persisted = repo.get_run_for_site(conn, run_id, identity.server_id)
+        if persisted and str(persisted.get("status") or "") in ("completed", "failed"):
+            return _run_response(persisted)
+
         payload = serialize_row(repo.run_to_status_payload(active))
         log_run_poll(
             run_id,

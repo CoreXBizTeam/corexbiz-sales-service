@@ -8,6 +8,8 @@ Production CoreXLeads no longer uses:
 
 ## New flow
 
+**Full workflow (config, curl, criteria mapping):** `corexbiz-core/documentation/clients/SALES_LEADS_WP_SERVICE_WORKFLOW.md`
+
 ```
 Vue (CoreXLeads) → WP REST /wp-json/corexbiz/v1/sales/*
                  → corex-sales-service (Postgres)

@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+# UI preset runs use this label; it is not a Places search keyword.
+QUICK_DISCOVERY_LIST_NAME = "Quick discovery"
+
+
 @dataclass(frozen=True)
 class GoogleMapsFinderPlan:
     cities_csv: Path
@@ -33,8 +37,8 @@ def _extract_keywords(criteria: Dict[str, Any], *, list_name: str = "") -> List[
             keywords = [str(k).strip() for k in ik if str(k).strip()]
             if keywords:
                 return keywords
-    name = str(list_name or "").strip()
-    if name:
+    name = str(list_name or criteria.get("list_name") or "").strip()
+    if name and name != QUICK_DISCOVERY_LIST_NAME:
         return [name]
     firm = criteria.get("firmographics")
     if isinstance(firm, dict):
