@@ -14,5 +14,6 @@ __pycache__/
 output/
 output_bc/
 output.csv
+quick/
 runs/
 .env.example.bak
