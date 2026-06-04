@@ -31,7 +31,7 @@ REGION="${GCP_REGION:-us-west1}"
 
 if [[ "${DEPLOY_TARGET}" == "production" ]]; then
   SERVICE_NAME="${CLOUD_RUN_SERVICE:-${CLOUD_RUN_PRODUCTION_SERVICE:-corexbiz-sales-service}}"
-  JOB_NAME="${CLOUD_RUN_JOB_NAME:-${CLOUD_RUN_JOB_PRODUCTION_NAME:-corexbiz-sales-pipeline-job}}"
+  JOB_NAME="${CLOUD_RUN_JOB_NAME:-${CLOUD_RUN_PRODUCTION_JOB_NAME:-corexbiz-sales-pipeline-job}}"
 else
   SERVICE_NAME="${CLOUD_RUN_SERVICE:-${CLOUD_RUN_DEV_SERVICE:-corex-sales-service-dev}}"
   JOB_NAME="${CLOUD_RUN_JOB_NAME:-${CLOUD_RUN_DEV_JOB_NAME:-corex-sales-pipeline-job-dev}}"

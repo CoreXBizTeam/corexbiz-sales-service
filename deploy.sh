@@ -6,31 +6,18 @@
 #
 # Default target is **dev**. Use --production / -p for production.
 #
-# Requires: gcloud CLI, Cloud Run + Cloud Build (+ optional Secret Manager) APIs enabled.
+# Prerequisites:
+#   gcloud CLI (logged in), Cloud Run + Cloud Build APIs enabled
+#   Cloud SQL instance + DATABASE_URL or POSTGRES_* + CLOUD_SQL_CONNECTION_NAME
+#   Optional: Secret Manager secrets (SECRET_* in .env)
 #
-# Optional environment overrides:
-#   GCP_PROJECT_ID                  default: corexbiz
-#   GCP_REGION                      default: us-west1
-#   DEPLOY_ENV                      dev | production (default: dev)
-#   CLOUD_RUN_SERVICE               override HTTP service name
-#   CLOUD_RUN_DEV_SERVICE           default: corex-sales-service-dev
-#   CLOUD_RUN_PRODUCTION_SERVICE    default: corexbiz-sales-service
-#   CLOUD_RUN_JOB_NAME              override pipeline job name
-#   CLOUD_RUN_DEV_JOB_NAME          default: corex-sales-pipeline-job-dev
-#   CLOUD_RUN_PRODUCTION_JOB_NAME   default: corexbiz-sales-pipeline-job
-#   CONTAINER_IMAGE                 skip build and use this image URI
-#   IMAGE_TAG                       tag for gcr.io build (default: git short SHA)
-#   SKIP_BUILD=1                    deploy existing CONTAINER_IMAGE / latest tag
-#   DATABASE_URL / CLOUD_RUN_DATABASE_URL / POSTGRES_* / CLOUD_SQL_CONNECTION_NAME
-#   GOOGLE_MAPS_API_KEY, WEBHOOK_SIGNING_SECRET, API_TOKEN
-#   SECRET_GOOGLE_MAPS_API_KEY      Secret Manager name:latest (optional)
-#   SECRET_WEBHOOK_SIGNING_SECRET   Secret Manager name:latest (optional)
-#   SECRET_API_TOKEN                Secret Manager name:latest (optional)
-#   SALES_WORKER_MODE               default: job on Cloud Run
-#   CLOUD_RUN_REQUIRE_AUTH          set to 1 to require IAM (default: public invoke)
-#   JOB_MEMORY                      default: 2Gi
-#   JOB_CPU                         default: 2
-#   JOB_TASK_TIMEOUT                default: 3600 (seconds)
+# After first deploy with SALES_WORKER_MODE=job:
+#   ./scripts/grant-cloud-run-iam.sh --dev
+#
+# Usage:
+#   ./deploy.sh              # dev API + job
+#   ./deploy.sh --production
+#   SKIP_BUILD=1 ./deploy.sh --skip-build   # redeploy env/config only
 
 set -euo pipefail
 
@@ -65,21 +52,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --help | -h)
-      cat <<EOF
-Usage: $(basename "$0") [options]
-
-Build one image and deploy the CoreX Sales API service + pipeline Cloud Run Job.
-
-Options:
-  --dev                 Deploy dev targets (default)
-  --production, -p      Deploy production targets
-  --service-only        Update HTTP service only
-  --job-only            Update pipeline job only
-  --skip-build          Use CONTAINER_IMAGE or existing tag (set SKIP_BUILD=1)
-  -h, --help            Show this help
-
-After first deploy, run ./scripts/grant-cloud-run-iam.sh so the service can execute the job.
-EOF
+      sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -125,10 +98,31 @@ else
   JOB_NAME="${CLOUD_RUN_DEV_JOB_NAME:-corex-sales-pipeline-job-dev}"
 fi
 
+# --- Cloud Run resource defaults (override via env) ---
+SERVICE_PORT="${SERVICE_PORT:-8080}"
+SERVICE_MEMORY="${SERVICE_MEMORY:-1Gi}"
+SERVICE_CPU="${SERVICE_CPU:-1}"
+SERVICE_CONCURRENCY="${SERVICE_CONCURRENCY:-80}"
+SERVICE_TIMEOUT="${SERVICE_TIMEOUT:-300}"
+SERVICE_MIN_INSTANCES="${SERVICE_MIN_INSTANCES:-0}"
+SERVICE_MAX_INSTANCES="${SERVICE_MAX_INSTANCES:-10}"
+
+JOB_MEMORY="${JOB_MEMORY:-2Gi}"
+JOB_CPU="${JOB_CPU:-2}"
+JOB_TASK_TIMEOUT="${JOB_TASK_TIMEOUT:-3600}"
+JOB_MAX_RETRIES="${JOB_MAX_RETRIES:-1}"
+
 AUTH_FLAG=(--allow-unauthenticated)
 if [[ "${CLOUD_RUN_REQUIRE_AUTH:-}" == "1" || "${CLOUD_RUN_REQUIRE_AUTH:-}" == "true" ]]; then
   AUTH_FLAG=(--no-allow-unauthenticated)
 fi
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "error: required command not found: $1" >&2
+    exit 1
+  }
+}
 
 read_env_file_value() {
   local key="$1"
@@ -147,9 +141,37 @@ read_env_file_value() {
   printf '%s' "$val"
 }
 
+# Write KEY=VALUE lines for gcloud --env-vars-file (handles special chars safely).
+write_env_vars_file() {
+  local dest="$1"
+  shift
+  python3 - "$dest" "$@" <<'PY'
+import json, sys
+from pathlib import Path
+
+dest = sys.argv[1]
+pairs = sys.argv[2:]
+lines = []
+for item in pairs:
+    if "=" not in item:
+        continue
+    key, val = item.split("=", 1)
+    lines.append(f"{key}: {json.dumps(val)}")
+Path(dest).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+PY
+}
+
+require_cmd gcloud
+require_cmd python3
+
 if [[ ! -f "${ROOT}/Dockerfile" ]]; then
   echo "error: Dockerfile not found in ${ROOT}" >&2
   exit 1
+fi
+
+ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || true)"
+if [[ -n "${ACTIVE_PROJECT}" && "${ACTIVE_PROJECT}" != "${PROJECT_ID}" ]]; then
+  echo "note: gcloud active project is ${ACTIVE_PROJECT}; deploying to ${PROJECT_ID}" >&2
 fi
 
 COMMON_ENV_PAIRS=()
@@ -219,10 +241,15 @@ if [[ -n "${ENV_DATABASE_URL}" ]]; then
   COMMON_ENV_PAIRS+=( "DATABASE_URL=${ENV_DATABASE_URL}" )
 fi
 
+# Never load a local .env file inside Cloud Run containers.
+COMMON_ENV_PAIRS+=( "SALES_DISABLE_DOTENV=1" )
+# PORT is reserved — set via `gcloud run deploy --port` and injected by Cloud Run.
+
 append_env POSTGRES_SCHEMA
 append_env DB_AUTO_SEED
 append_env VALIDATE_SUBSCRIPTION_URL
 append_env SUBSCRIPTION_VALIDATION_BYPASS
+append_env LOG_LEVEL
 
 append_secret GOOGLE_MAPS_API_KEY SECRET_GOOGLE_MAPS_API_KEY
 append_secret WEBHOOK_SIGNING_SECRET SECRET_WEBHOOK_SIGNING_SECRET
@@ -238,7 +265,10 @@ ENV_WORKER_MODE="${SALES_WORKER_MODE-}"
 if [[ -z "${ENV_WORKER_MODE}" ]]; then
   ENV_WORKER_MODE="$(read_env_file_value SALES_WORKER_MODE 2>/dev/null || true)"
 fi
-if [[ -z "${ENV_WORKER_MODE}" ]]; then
+if [[ -z "${ENV_WORKER_MODE}" || "${ENV_WORKER_MODE}" == "inline" ]]; then
+  if [[ "${ENV_WORKER_MODE}" == "inline" ]]; then
+    echo "note: overriding SALES_WORKER_MODE=inline → job for Cloud Run deploy" >&2
+  fi
   ENV_WORKER_MODE="job"
 fi
 SERVICE_ONLY_ENV_PAIRS+=( "SALES_WORKER_MODE=${ENV_WORKER_MODE}" )
@@ -263,12 +293,6 @@ if [[ -z "${ENV_CLOUD_SQL_CONN}" && "${ENV_DATABASE_URL}" == *"/cloudsql/"* ]]; 
   )"
 fi
 
-join_env_pairs() {
-  local -n _arr=$1
-  local IFS=','
-  echo "${_arr[*]}"
-}
-
 GCLOUD_SQL=()
 if [[ -n "${ENV_CLOUD_SQL_CONN}" ]]; then
   GCLOUD_SQL=( --set-cloudsql-instances="${ENV_CLOUD_SQL_CONN}" )
@@ -277,14 +301,14 @@ elif [[ "${ENV_DATABASE_URL}" == *"/cloudsql/"* ]]; then
   echo "warning: DATABASE_URL uses /cloudsql/ but CLOUD_SQL_CONNECTION_NAME is unset" >&2
 fi
 
-GCLOUD_SECRETS=()
-if [[ ${#SECRET_PAIRS[@]} -gt 0 ]]; then
-  GCLOUD_SECRETS=( --set-secrets="$(join_env_pairs SECRET_PAIRS)" )
+SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-}"
+if [[ -z "${SERVICE_ACCOUNT}" ]]; then
+  SERVICE_ACCOUNT="$(read_env_file_value CLOUD_RUN_SERVICE_ACCOUNT 2>/dev/null || true)"
 fi
-
-JOB_MEMORY="${JOB_MEMORY:-2Gi}"
-JOB_CPU="${JOB_CPU:-2}"
-JOB_TASK_TIMEOUT="${JOB_TASK_TIMEOUT:-3600}"
+GCLOUD_SA=()
+if [[ -n "${SERVICE_ACCOUNT}" ]]; then
+  GCLOUD_SA=( --service-account="${SERVICE_ACCOUNT}" )
+fi
 
 SEED_DATABASE_URL="${DATABASE_URL-}"
 if [[ -z "${SEED_DATABASE_URL}" ]]; then
@@ -298,6 +322,21 @@ if [[ -n "${SEED_DATABASE_URL}" && "${SEED_DATABASE_URL}" != *"/cloudsql/"* ]]; 
   else
     echo "warning: pre-deploy db seed failed (is Cloud SQL proxy running?). Container startup will retry." >&2
   fi
+fi
+
+ENV_FILE="$(mktemp)"
+SERVICE_ENV_FILE="$(mktemp)"
+trap 'rm -f "${ENV_FILE}" "${SERVICE_ENV_FILE}"' EXIT
+
+write_env_vars_file "${ENV_FILE}" "${COMMON_ENV_PAIRS[@]}"
+
+GCLOUD_SECRETS=()
+if [[ ${#SECRET_PAIRS[@]} -gt 0 ]]; then
+  _OLD_IFS="${IFS}"
+  IFS=','
+  SECRETS_JOINED="${SECRET_PAIRS[*]}"
+  IFS="${_OLD_IFS}"
+  GCLOUD_SECRETS=( --set-secrets="${SECRETS_JOINED}" )
 fi
 
 LABEL="${DEPLOY_TARGET}"
@@ -318,39 +357,80 @@ else
 fi
 
 if [[ "${DEPLOY_SERVICE}" -eq 1 ]]; then
-  SERVICE_ENV=( "${COMMON_ENV_PAIRS[@]}" "${SERVICE_ONLY_ENV_PAIRS[@]}" )
-  SERVICE_ENV_JOINED="$(join_env_pairs SERVICE_ENV)"
+  write_env_vars_file "${SERVICE_ENV_FILE}" "${COMMON_ENV_PAIRS[@]}" "${SERVICE_ONLY_ENV_PAIRS[@]}"
   echo "Deploying Cloud Run service ${SERVICE_NAME}..."
-  gcloud run deploy "${SERVICE_NAME}" \
+  SERVICE_DEPLOY_ARGS=(
+    gcloud run deploy "${SERVICE_NAME}"
+    --project "${PROJECT_ID}"
+    --region "${REGION}"
+    --platform managed
+    --image "${IMAGE}"
+    --port "${SERVICE_PORT}"
+    --memory "${SERVICE_MEMORY}"
+    --cpu "${SERVICE_CPU}"
+    --concurrency "${SERVICE_CONCURRENCY}"
+    --timeout "${SERVICE_TIMEOUT}"
+    --min-instances "${SERVICE_MIN_INSTANCES}"
+    --max-instances "${SERVICE_MAX_INSTANCES}"
+    --startup-probe="httpGet.path=/health,httpGet.port=${SERVICE_PORT},initialDelaySeconds=5,timeoutSeconds=5,periodSeconds=10,failureThreshold=3"
+    --liveness-probe="httpGet.path=/health,httpGet.port=${SERVICE_PORT},initialDelaySeconds=10,timeoutSeconds=5,periodSeconds=30,failureThreshold=3"
+    --labels="env=${LABEL},component=corex-sales-service"
+    --quiet
+  )
+  if [[ ${#AUTH_FLAG[@]} -gt 0 ]]; then
+    SERVICE_DEPLOY_ARGS+=( "${AUTH_FLAG[@]}" )
+  fi
+  if [[ ${#GCLOUD_SQL[@]} -gt 0 ]]; then
+    SERVICE_DEPLOY_ARGS+=( "${GCLOUD_SQL[@]}" )
+  fi
+  if [[ ${#GCLOUD_SA[@]} -gt 0 ]]; then
+    SERVICE_DEPLOY_ARGS+=( "${GCLOUD_SA[@]}" )
+  fi
+  SERVICE_DEPLOY_ARGS+=( --env-vars-file="${SERVICE_ENV_FILE}" )
+  if [[ ${#GCLOUD_SECRETS[@]} -gt 0 ]]; then
+    SERVICE_DEPLOY_ARGS+=( "${GCLOUD_SECRETS[@]}" )
+  fi
+  "${SERVICE_DEPLOY_ARGS[@]}"
+
+  SERVICE_URL="$(gcloud run services describe "${SERVICE_NAME}" \
     --project "${PROJECT_ID}" \
     --region "${REGION}" \
-    --platform managed \
-    --image "${IMAGE}" \
-    --quiet \
-    "${AUTH_FLAG[@]}" \
-    "${GCLOUD_SQL[@]}" \
-    --update-env-vars="${SERVICE_ENV_JOINED}" \
-    "${GCLOUD_SECRETS[@]}"
+    --format='value(status.url)' 2>/dev/null || true)"
+  if [[ -n "${SERVICE_URL}" ]]; then
+    echo "Service URL: ${SERVICE_URL}"
+    echo "Health:      ${SERVICE_URL}/health"
+  fi
 fi
 
 if [[ "${DEPLOY_JOB}" -eq 1 ]]; then
-  JOB_ENV_JOINED="$(join_env_pairs COMMON_ENV_PAIRS)"
   echo "Deploying Cloud Run Job ${JOB_NAME}..."
-  gcloud run jobs deploy "${JOB_NAME}" \
-    --project "${PROJECT_ID}" \
-    --region "${REGION}" \
-    --image "${IMAGE}" \
-    --command python \
-    --args=-m,src.worker.run_job \
-    --tasks 1 \
-    --max-retries 1 \
-    --task-timeout "${JOB_TASK_TIMEOUT}" \
-    --memory "${JOB_MEMORY}" \
-    --cpu "${JOB_CPU}" \
-    --quiet \
-    "${GCLOUD_SQL[@]}" \
-    --update-env-vars="${JOB_ENV_JOINED}" \
-    "${GCLOUD_SECRETS[@]}"
+  JOB_DEPLOY_ARGS=(
+    gcloud run jobs deploy "${JOB_NAME}"
+    --project "${PROJECT_ID}"
+    --region "${REGION}"
+    --image "${IMAGE}"
+    --command python
+    --args=-m,src.worker.run_job
+    --tasks 1
+    --parallelism 1
+    --max-retries "${JOB_MAX_RETRIES}"
+    --task-timeout "${JOB_TASK_TIMEOUT}"
+    --memory "${JOB_MEMORY}"
+    --cpu "${JOB_CPU}"
+    --labels="env=${LABEL},component=corex-sales-pipeline"
+    --quiet
+  )
+  if [[ ${#GCLOUD_SQL[@]} -gt 0 ]]; then
+    JOB_DEPLOY_ARGS+=( "${GCLOUD_SQL[@]}" )
+  fi
+  if [[ ${#GCLOUD_SA[@]} -gt 0 ]]; then
+    JOB_DEPLOY_ARGS+=( "${GCLOUD_SA[@]}" )
+  fi
+  JOB_DEPLOY_ARGS+=( --env-vars-file="${ENV_FILE}" )
+  if [[ ${#GCLOUD_SECRETS[@]} -gt 0 ]]; then
+    JOB_DEPLOY_ARGS+=( "${GCLOUD_SECRETS[@]}" )
+  fi
+  "${JOB_DEPLOY_ARGS[@]}"
 fi
 
 echo "Done."

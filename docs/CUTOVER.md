@@ -8,6 +8,8 @@ Production CoreXLeads no longer uses:
 
 ## New flow
 
+**Deploy (Cloud Run):** [docs/DEPLOY_CLOUD_RUN.md](./DEPLOY_CLOUD_RUN.md)
+
 **Full workflow (config, curl, criteria mapping):** `corexbiz-core/documentation/clients/SALES_LEADS_WP_SERVICE_WORKFLOW.md`
 
 ```

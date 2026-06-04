@@ -11,6 +11,7 @@ __pycache__
 .git
 .gitignore
 runs
+quick
 output
 output_bc
 .cache
