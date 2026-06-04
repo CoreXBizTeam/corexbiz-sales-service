@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CoreX Sales Service — Admin</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous">
+  <style>
+    #logs-table-body td.log-message-cell { max-width: 55vw; white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; }
+    #logs-filter-request-id { max-width: 220px; }
+    #admin-login-gate { max-width: 420px; margin: 4rem auto; }
+    .rid-link { cursor: pointer; text-decoration: underline; }
+  </style>
+</head>
+<body class="bg-light">
+  <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+    <div class="container-fluid">
+      <span class="navbar-brand mb-0 h1">CoreX Sales Service</span>
+      <span class="navbar-text ms-auto text-white-50">Environment: <span class="text-white" id="admin-env-label">—</span></span>
+    </div>
+  </nav>
+
+  <div id="admin-login-gate" class="card shadow-sm d-none">
+    <div class="card-body">
+      <h2 class="h5 card-title">Admin sign in</h2>
+      <p class="small text-muted mb-3">Enter the admin password configured in <code>ADMIN_PASSWORD</code>.</p>
+      <form id="admin-login-form">
+        <div class="mb-3">
+          <label class="form-label" for="admin-login-password">Password</label>
+          <input type="password" class="form-control" id="admin-login-password" autocomplete="current-password" required>
+        </div>
+        <button type="submit" class="btn btn-primary">Sign in</button>
+        <p id="admin-login-error" class="small text-danger mt-2 mb-0 d-none"></p>
+      </form>
+    </div>
+  </div>
+
+  <div class="container-fluid py-3">
+    <div id="layout" class="row g-3 d-none">
+      <aside class="col-lg-3 col-md-4">
+        <div class="card shadow-sm">
+          <div class="card-header py-2"><strong class="mb-0">Monitoring</strong></div>
+          <div class="list-group list-group-flush">
+            <button type="button" class="list-group-item list-group-item-action active" data-admin-panel="overview">Overview</button>
+            <button type="button" class="list-group-item list-group-item-action" data-admin-panel="logs">Request logs</button>
+            <button type="button" class="list-group-item list-group-item-action" data-admin-panel="runs">Active runs</button>
+          </div>
+        </div>
+        <p class="small text-muted mt-2 mb-0">
+          API: <a href="/docs" target="_blank" rel="noopener"><code>/docs</code></a> ·
+          Health: <a href="/health" target="_blank" rel="noopener"><code>/health</code></a>
+        </p>
+        <button type="button" class="btn btn-sm btn-outline-secondary mt-2" id="admin-logout-btn">Sign out</button>
+      </aside>
+
+      <main class="col-lg-9 col-md-8">
+        <div id="panel-overview" class="card shadow-sm">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">Service overview</h2>
+            <button type="button" class="btn btn-sm btn-outline-primary" id="overview-refresh-btn">Refresh</button>
+          </div>
+          <div class="card-body">
+            <p class="small text-muted" id="overview-status">Loading…</p>
+            <dl class="row mb-0" id="overview-dl"></dl>
+          </div>
+        </div>
+
+        <div id="panel-logs" class="card shadow-sm d-none">
+          <div class="card-header d-flex flex-wrap align-items-center gap-2">
+            <h2 class="h5 mb-0">Request logs</h2>
+            <span class="small text-muted ms-auto" id="logs-status">—</span>
+            <input type="text" class="form-control form-control-sm" id="logs-filter-request-id" placeholder="Filter by request_id">
+            <button type="button" class="btn btn-sm btn-outline-primary" id="logs-refresh-btn">Refresh</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="logs-clear-filter-btn">Clear filter</button>
+          </div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table table-sm table-striped mb-0">
+                <thead class="table-light">
+                  <tr>
+                    <th>Time</th>
+                    <th>Level</th>
+                    <th>Request ID</th>
+                    <th>Message</th>
+                  </tr>
+                </thead>
+                <tbody id="logs-table-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div id="panel-runs" class="card shadow-sm d-none">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">In-memory runs (this instance)</h2>
+            <button type="button" class="btn btn-sm btn-outline-primary" id="runs-refresh-btn">Refresh</button>
+          </div>
+          <div class="card-body p-0">
+            <p class="small text-muted px-3 pt-3" id="runs-status">—</p>
+            <div class="table-responsive">
+              <table class="table table-sm table-striped mb-0">
+                <thead class="table-light">
+                  <tr>
+                    <th>Run ID</th>
+                    <th>Site</th>
+                    <th>Status</th>
+                    <th>Source</th>
+                    <th>Created</th>
+                  </tr>
+                </thead>
+                <tbody id="runs-table-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script src="/admin/app.js"></script>
+</body>
+</html>

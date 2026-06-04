@@ -53,7 +53,8 @@ def google_maps_config_error() -> dict[str, str]:
         "error": "google_maps_not_configured",
         "message": (
             "GOOGLE_MAPS_API_KEY is not set on the sales service. "
-            "Add a Google Cloud API key with Places API enabled to "
-            "corex-sales-python/.env, then restart the service."
+            "Add a Google Cloud API key to corex-sales-python/.env with "
+            "Places API and Geocoding API enabled (and allowed on the key), "
+            "then restart the service."
         ),
     }

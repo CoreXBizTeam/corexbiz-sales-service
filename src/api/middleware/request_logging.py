@@ -12,10 +12,11 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from src.log import get_logger, log_action
+from src.log.context import get_request_id
 
 logger = get_logger("sales.http")
 
-_SKIP_BODY_PATHS = frozenset({"/health", "/docs", "/openapi.json", "/redoc"})
+_SKIP_BODY_PATHS = frozenset({"/health", "/docs", "/openapi.json", "/redoc", "/admin", "/admin/app.js"})
 
 
 async def _request_payload(request: Request) -> dict[str, Any]:
@@ -50,6 +51,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         start = time.perf_counter()
         path = request.url.path
         payload = await _request_payload(request)
+        rid = getattr(request.state, "request_id", None) or get_request_id()
+        if rid:
+            payload["request_id"] = rid
 
         log_action(
             logger,
@@ -58,6 +62,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             f"{request.method} {path}",
             payload,
             traces=[("start", "request received")],
+            request_id=rid,
         )
 
         try:
@@ -75,6 +80,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     ("error", str(exc)),
                 ],
                 exc_info=True,
+                request_id=rid,
             )
             raise
 
@@ -84,7 +90,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             logging.INFO,
             "HTTP",
             f"{request.method} {path}",
-            {"status": response.status_code, "duration_ms": elapsed_ms},
+            {"status": response.status_code, "duration_ms": elapsed_ms, "request_id": rid},
             traces=[(response.status_code, f"completed in {elapsed_ms}ms")],
+            request_id=rid,
         )
         return response

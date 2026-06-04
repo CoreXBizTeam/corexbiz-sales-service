@@ -69,7 +69,9 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    from src.api.middleware.request_id import RequestIdMiddleware
     from src.api.middleware.request_logging import RequestLoggingMiddleware
+    from src.api.routes.admin import router as admin_router
     from src.api.routes.leads import router as leads_router
     from src.api.routes.runs import router as runs_router
 
@@ -81,6 +83,7 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(RequestLoggingMiddleware)
+    app.add_middleware(RequestIdMiddleware)
 
     cors_origins = (os.getenv("CORS_ALLOW_ORIGINS") or "*").split(",")
     app.add_middleware(
@@ -123,6 +126,7 @@ def create_app() -> FastAPI:
 
         return payload
 
+    app.include_router(admin_router)
     app.include_router(runs_router, prefix="/api/v1")
     app.include_router(leads_router, prefix="/api/v1")
 

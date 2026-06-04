@@ -63,6 +63,10 @@ class RunRegistry:
         with self._lock:
             self._runs.pop(str(run_id), None)
 
+    def list_runs(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(row) for row in self._runs.values()]
+
     def clear(self) -> None:
         with self._lock:
             self._runs.clear()
@@ -89,6 +93,10 @@ def get_active_run_for_site(site_id: str) -> dict[str, Any] | None:
 
 def remove_run(run_id: UUID | str) -> None:
     _registry.remove(run_id)
+
+
+def list_runs() -> list[dict[str, Any]]:
+    return _registry.list_runs()
 
 
 def clear_runs() -> None:

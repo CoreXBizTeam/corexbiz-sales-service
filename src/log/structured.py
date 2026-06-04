@@ -21,6 +21,8 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence, Tuple, Union
 
+from src.log.context import get_request_id
+
 Trace = Tuple[Union[str, int], str]
 
 _SENSITIVE_KEY = re.compile(
@@ -114,7 +116,18 @@ class StructuredFormatter(logging.Formatter):
             for exc_line in exc_text.splitlines():
                 lines.append(f"  - [trace] {exc_line}")
 
-        return "\n".join(lines)
+        rid = getattr(record, "request_id", None) or get_request_id()
+        if rid:
+            lines[0] = f"{lines[0]} rid={rid}"
+
+        result = "\n".join(lines)
+        try:
+            from src.admin.log_buffer import record_log_line
+
+            record_log_line(result)
+        except Exception:
+            pass
+        return result
 
 
 def configure_logging(*, force: bool = False) -> None:
@@ -170,8 +183,10 @@ def log_action(
     *,
     traces: Sequence[Trace] | None = None,
     exc_info: bool = False,
+    request_id: str | None = None,
 ) -> None:
     """Emit one structured log record."""
+    rid = request_id or get_request_id()
     logger.log(
         level,
         action,
@@ -180,6 +195,7 @@ def log_action(
             "url": url,
             "data": data,
             "traces": tuple(traces or ()),
+            "request_id": rid,
         },
         exc_info=exc_info,
     )

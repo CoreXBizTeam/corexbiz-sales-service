@@ -96,6 +96,27 @@ curl -sS "https://YOUR-SERVICE.run.app/health" | python3 -m json.tool
 ./scripts/verify-workflow.sh
 ```
 
+## Admin UI (request tracing)
+
+After deploy, open **`https://YOUR-SERVICE.run.app/admin`**.
+
+Set in `.env` before `./deploy.sh`:
+
+```bash
+ADMIN_PASSWORD=your-admin-password
+# optional: ADMIN_SESSION_SECRET=…  (defaults to API_TOKEN)
+```
+
+The admin UI provides:
+
+- **Overview** — worker mode, database, Google Maps config
+- **Request logs** — Cloud Logging on Cloud Run (filter by `request_id` / `rid=…` on each line)
+- **Active runs** — in-memory runs on the current Cloud Run instance
+
+Each HTTP response includes **`X-Request-Id`**. When WordPress triggers a run, copy that header (or filter logs) to trace the full request/response chain.
+
+Grant **`roles/logging.viewer`** to the Cloud Run service account if `/admin/logs` returns a credentials error.
+
 ## Architecture notes
 
 - **Cloud SQL**: `--set-cloudsql-instances` mounts the unix socket; `DATABASE_URL` uses `host=/cloudsql/INSTANCE`
