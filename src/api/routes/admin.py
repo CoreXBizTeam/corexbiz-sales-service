@@ -96,8 +96,6 @@ def admin_overview() -> dict[str, Any]:
     return {
         "environment": _admin_env_label(),
         "service": "corex-sales-service",
-        "worker_mode": os.getenv("SALES_WORKER_MODE", "inline"),
-        "cloud_run_job": os.getenv("SALES_CLOUD_RUN_JOB", ""),
         "database": db_status,
         "google_maps": {"configured": google_maps_configured()},
         "api_docs": "/docs",
@@ -107,7 +105,7 @@ def admin_overview() -> dict[str, Any]:
 
 @router.get("/admin/api/runs", dependencies=[Depends(require_admin)])
 def admin_active_runs() -> dict[str, Any]:
-    runs = [_serialize_run(row) for row in run_registry.list_all_tracked_runs()]
+    runs = [_serialize_run(row) for row in run_registry.list_runs()]
     return {"runs": runs, "count": len(runs)}
 
 

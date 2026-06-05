@@ -1,8 +1,7 @@
-"""Tests for durable worker handoff (Phase C)."""
+"""Tests for durable worker run-spec handoff."""
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 import unittest
@@ -78,76 +77,11 @@ class TestJobHandoff(unittest.TestCase):
             with self.assertRaises(RunSpecError):
                 load_run_spec()
 
-
-class TestCloudRunJobHandoff(unittest.TestCase):
-    def test_build_request_requires_run_spec_payload(self) -> None:
-        from src.worker.cloud_run_dispatch import build_run_job_request
-
-        run = validate_run_spec(_sample_run())
-        body = build_run_job_request(run)
-        env = body["overrides"]["containerOverrides"][0]["env"]
-        self.assertEqual(env[0]["name"], "SALES_RUN_SPEC")
-        self.assertEqual(json.loads(env[0]["value"])["id"], run["id"])
-        self.assertEqual(
-            body["overrides"]["containerOverrides"][0]["args"],
-            ["-m", "src.worker.run_job"],
-        )
-
-    def test_dispatch_posts_run_spec(self) -> None:
-        from src.worker import cloud_run_dispatch as dispatch
-
-        run = validate_run_spec(_sample_run())
-        fake_response = mock.Mock()
-        fake_response.status_code = 200
-        fake_response.json.return_value = {"name": "executions/abc"}
-
-        mock_client = mock.Mock()
-        mock_client.__enter__ = mock.Mock(return_value=mock_client)
-        mock_client.__exit__ = mock.Mock(return_value=False)
-        mock_client.post.return_value = fake_response
-
-        with mock.patch.dict(
-            os.environ,
-            {
-                "SALES_CLOUD_RUN_JOB": "corex-sales-pipeline-job-dev",
-                "GCP_PROJECT_ID": "corexbiz",
-                "GCP_REGION": "us-west1",
-            },
-            clear=False,
-        ):
-            with mock.patch.object(dispatch, "_access_token", return_value="tok123"):
-                with mock.patch("httpx.Client", return_value=mock_client):
-                    result = dispatch.dispatch_cloud_run_job(run)
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["handoff"], "SALES_RUN_SPEC")
-        posted = mock_client.post.call_args.kwargs["json"]
-        env_value = posted["overrides"]["containerOverrides"][0]["env"][0]["value"]
-        self.assertEqual(json.loads(env_value)["id"], run["id"])
-
-
-class TestEnqueueJobHandoff(unittest.TestCase):
-    def test_subprocess_worker_writes_validated_config(self) -> None:
+    def test_enqueue_rejects_invalid_spec(self) -> None:
         from src.worker import enqueue as enqueue_mod
 
-        run = validate_run_spec(_sample_run())
-        with mock.patch.object(enqueue_mod.subprocess, "Popen") as popen:
-            enqueue_mod._dispatch_subprocess_worker(run)
-
-        popen.assert_called_once()
-        argv = popen.call_args[0][0]
-        config_index = argv.index("--config") + 1
-        config_path = Path(argv[config_index])
-        loaded = load_run_spec(config_path=config_path)
-        self.assertEqual(loaded["id"], run["id"])
-        config_path.unlink(missing_ok=True)
-
-    def test_job_mode_rejects_invalid_spec(self) -> None:
-        from src.worker import enqueue as enqueue_mod
-
-        with mock.patch.dict(os.environ, {"SALES_WORKER_MODE": "job"}, clear=False):
-            with self.assertRaises(RunSpecError):
-                enqueue_mod.enqueue_run({"id": str(uuid.uuid4())})
+        with self.assertRaises(RunSpecError):
+            enqueue_mod.enqueue_run({"id": str(uuid.uuid4())})
 
 
 if __name__ == "__main__":

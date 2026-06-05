@@ -112,8 +112,8 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(get_resp.status_code, 200)
         run = get_resp.json()
         self.assertEqual(run["id"], run_id)
-        self.assertEqual(run["status"], "queued")
-        self.assertFalse(run["running"])
+        self.assertEqual(run["status"], "running")
+        self.assertTrue(run["running"])
 
         from src.worker import run_registry
 
@@ -153,48 +153,39 @@ class TestApiRoutes(unittest.TestCase):
         body = active.json()
         self.assertTrue(body["running"])
         self.assertEqual(body["run_id"], run_id)
-        self.assertEqual(body["status"], "queued")
+        self.assertEqual(body["status"], "running")
 
         from src.worker import run_registry
 
         run_registry.remove_run(run_id)
 
     @mock.patch("src.api.routes.runs.enqueue_run")
-    def test_job_mode_allows_back_to_back_runs(self, mock_enqueue) -> None:
-        """API registry must not block forever when workers run as Cloud Run Jobs."""
-        prev_mode = os.environ.get("SALES_WORKER_MODE")
-        os.environ["SALES_WORKER_MODE"] = "job"
-        try:
-            from src.api.main import create_app
-            from src.worker import run_registry
+    def test_second_run_returns_409_while_first_is_in_memory(self, mock_enqueue) -> None:
+        from src.api.main import create_app
+        from src.worker import run_registry
 
-            client = TestClient(create_app())
-            run_registry.clear_runs()
-            payload = {
-                "list_name": "job mode test",
-                "source_type": "google_maps",
-                "criteria": {"cities_file": "cities.csv"},
-            }
-            first = client.post(
-                "/api/v1/runs",
-                headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
-                json=payload,
-            )
-            second = client.post(
-                "/api/v1/runs",
-                headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
-                json=payload,
-            )
-            self.assertEqual(first.status_code, 202)
-            self.assertEqual(second.status_code, 202)
-            self.assertNotEqual(first.json()["run_id"], second.json()["run_id"])
-            self.assertEqual(mock_enqueue.call_count, 2)
-            self.assertEqual(len(run_registry.list_runs()), 0)
-        finally:
-            if prev_mode is None:
-                os.environ.pop("SALES_WORKER_MODE", None)
-            else:
-                os.environ["SALES_WORKER_MODE"] = prev_mode
+        client = TestClient(create_app())
+        run_registry.clear_runs()
+        payload = {
+            "list_name": "concurrency test",
+            "source_type": "google_maps",
+            "criteria": {"cities_file": "cities.csv"},
+        }
+        first = client.post(
+            "/api/v1/runs",
+            headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+            json=payload,
+        )
+        second = client.post(
+            "/api/v1/runs",
+            headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+            json=payload,
+        )
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(mock_enqueue.call_count, 1)
+        self.assertEqual(len(run_registry.list_runs()), 1)
+        run_registry.clear_runs()
 
     def test_create_run_rejects_invalid_source_type(self) -> None:
         response = self.client.post(

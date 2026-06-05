@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# One-time IAM grants so the Cloud Run **service** can execute the pipeline **job**
-# and connect to Cloud SQL.
+# One-time IAM grants so the Cloud Run service can connect to Cloud SQL.
 #
 # Usage:
 #   ./scripts/grant-cloud-run-iam.sh [--dev | --production]
 #
 # Override defaults:
-#   GCP_PROJECT_ID, GCP_REGION, CLOUD_RUN_SERVICE, CLOUD_RUN_JOB_NAME, SERVICE_ACCOUNT
+#   GCP_PROJECT_ID, GCP_REGION, CLOUD_RUN_SERVICE, SERVICE_ACCOUNT
 
 set -euo pipefail
 
@@ -31,10 +30,8 @@ REGION="${GCP_REGION:-us-west1}"
 
 if [[ "${DEPLOY_TARGET}" == "production" ]]; then
   SERVICE_NAME="${CLOUD_RUN_SERVICE:-${CLOUD_RUN_PRODUCTION_SERVICE:-corexbiz-sales-service}}"
-  JOB_NAME="${CLOUD_RUN_JOB_NAME:-${CLOUD_RUN_PRODUCTION_JOB_NAME:-corexbiz-sales-pipeline-job}}"
 else
   SERVICE_NAME="${CLOUD_RUN_SERVICE:-${CLOUD_RUN_DEV_SERVICE:-corex-sales-service-dev}}"
-  JOB_NAME="${CLOUD_RUN_JOB_NAME:-${CLOUD_RUN_DEV_JOB_NAME:-corex-sales-pipeline-job-dev}}"
 fi
 
 if [[ -n "${SERVICE_ACCOUNT:-}" ]]; then
@@ -53,7 +50,6 @@ fi
 echo "Project:  ${PROJECT_ID}"
 echo "Region:   ${REGION}"
 echo "Service:  ${SERVICE_NAME}"
-echo "Job:      ${JOB_NAME}"
 echo "Identity: ${SA}"
 echo
 
@@ -61,13 +57,6 @@ echo "Granting roles/cloudsql.client..."
 gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member="serviceAccount:${SA}" \
   --role="roles/cloudsql.client" \
-  --condition=None \
-  --quiet >/dev/null
-
-echo "Granting roles/run.developer (execute Cloud Run Jobs)..."
-gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-  --member="serviceAccount:${SA}" \
-  --role="roles/run.developer" \
   --condition=None \
   --quiet >/dev/null
 

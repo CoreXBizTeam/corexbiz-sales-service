@@ -88,7 +88,7 @@ def load_run_spec(*, config_path: Path | None = None) -> Dict[str, Any]:
 
 
 def write_run_spec_file(run: Dict[str, Any], path: Path) -> Path:
-    """Write validated run spec to a JSON file (local subprocess handoff)."""
+    """Write validated run spec to a JSON file (CLI / debug handoff)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(encode_run_spec(run), encoding="utf-8")
     return path

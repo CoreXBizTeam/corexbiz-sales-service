@@ -1,11 +1,6 @@
 # Deploy CoreX Sales Service to Google Cloud Run
 
-The sales service runs as:
-
-1. **Cloud Run service** — FastAPI HTTP API (`uvicorn src.api.main:app`) on port `8080`
-2. **Cloud Run Job** — pipeline worker (`python -m src.worker.run_job`) dispatched per lead run
-
-One container image serves both. The API returns `202` immediately and starts the job with the full run spec in `SALES_RUN_SPEC`.
+The sales service is a **Cloud Run service** running FastAPI (`uvicorn src.api.main:app`) on port `8080`. Lead pipelines run in **background threads on the same instance**; in-memory run status is cleared when the worker finishes.
 
 ## Prerequisites
 
@@ -27,9 +22,6 @@ POSTGRES_SCHEMA=sales-service
 
 # Cloud Run unix socket URL (deploy.sh builds this if omitted)
 CLOUD_RUN_DATABASE_URL=postgresql://postgres:PASSWORD@/corexbiz-db?host=/cloudsql/corexbiz:us-west1:postgres-17-sandbox
-
-# Production worker mode
-SALES_WORKER_MODE=job
 ```
 
 Prefer Secret Manager in production:
@@ -44,34 +36,29 @@ SECRET_WEBHOOK_SIGNING_SECRET=corex-sales-webhook-signing-secret:latest
 
 ```bash
 chmod +x deploy.sh
-./deploy.sh              # dev: corex-sales-service-dev + corex-sales-pipeline-job-dev
-./deploy.sh --production # prod: corexbiz-sales-service + corexbiz-sales-pipeline-job
+./deploy.sh              # dev: corex-sales-service-dev
+./deploy.sh --production # prod: corexbiz-sales-service
 ```
 
 Options:
 
 | Flag | Purpose |
 |------|---------|
-| `--service-only` | Update HTTP service only |
-| `--job-only` | Update pipeline job only |
 | `--skip-build` | Reuse `CONTAINER_IMAGE` or existing tag |
 
 ### Resource defaults (override via env)
 
-| Variable | Default | Applies to |
-|----------|---------|------------|
-| `SERVICE_MEMORY` | `1Gi` | HTTP service |
-| `SERVICE_CPU` | `1` | HTTP service |
-| `SERVICE_CONCURRENCY` | `80` | HTTP service |
-| `SERVICE_TIMEOUT` | `300` | HTTP service (seconds) |
-| `SERVICE_MAX_INSTANCES` | `10` | HTTP service |
-| `JOB_MEMORY` | `2Gi` | Pipeline job |
-| `JOB_CPU` | `2` | Pipeline job |
-| `JOB_TASK_TIMEOUT` | `3600` | Pipeline job (seconds) |
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `SERVICE_MEMORY` | `2Gi` | Pipeline runs in-process |
+| `SERVICE_CPU` | `2` | Pipeline runs in-process |
+| `SERVICE_CONCURRENCY` | `80` | HTTP concurrency |
+| `SERVICE_TIMEOUT` | `3600` | Max request + background run window (seconds) |
+| `SERVICE_MAX_INSTANCES` | `10` | Scale-out limit |
 
 ## One-time IAM
 
-After the first deploy, grant the service account permission to execute jobs and reach Cloud SQL:
+Grant the service account permission to reach Cloud SQL:
 
 ```bash
 ./scripts/grant-cloud-run-iam.sh --dev
@@ -109,7 +96,7 @@ ADMIN_PASSWORD=your-admin-password
 
 The admin UI provides:
 
-- **Overview** — worker mode, database, Google Maps config
+- **Overview** — pipeline mode, database, Google Maps config
 - **Request logs** — Cloud Logging on Cloud Run (filter by `request_id` / `rid=…` on each line)
 - **Active runs** — in-memory runs on the current Cloud Run instance
 
@@ -123,4 +110,4 @@ Grant **`roles/logging.viewer`** to the Cloud Run service account if `/admin/log
 - **No local `.env` in container**: deploy sets `SALES_DISABLE_DOTENV=1`
 - **Public invoke** by default (`--allow-unauthenticated`); app auth uses `Authorization: Bearer` + `API_TOKEN`
 - **Health checks**: `/health` startup + liveness probes on the service
-- **Job CPU**: pipeline job uses 2 CPU / 2Gi by default (`JOB_CPU`, `JOB_MEMORY`)
+- **Manual pipeline CLI**: `python -m src.worker.run_job` with `SALES_RUN_SPEC` (local/debug only; production uses inline threads)

@@ -23,7 +23,7 @@ from src.config.env import (
 )
 from src.db import repository as repo
 from src.log import get_logger, log_action, log_run_poll
-from src.worker.enqueue import enqueue_run, worker_mode
+from src.worker.enqueue import enqueue_run
 from src.worker import run_registry
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -63,39 +63,9 @@ def _idle_active_response() -> ActiveRunResponse:
     return ActiveRunResponse(running=False, status="idle")
 
 
-def _maybe_clear_in_flight(run_id: UUID, site_id: str) -> None:
-    from src.db.pool import get_pool
-
-    try:
-        pool = get_pool()
-    except Exception:
-        return
-    with pool.connection() as conn:
-        row = repo.get_run_for_site(conn, run_id, site_id)
-    if row and str(row.get("status") or "") in ("completed", "failed"):
-        run_registry.clear_in_flight_run(run_id)
-
-
-def _progress_row_for_site(site_id: str) -> dict | None:
-    active = run_registry.get_active_run_for_site(site_id)
-    if active is not None:
-        return active
-
-    inflight = run_registry.get_in_flight_run_for_site(site_id)
-    if inflight is not None:
-        _maybe_clear_in_flight(UUID(str(inflight["id"])), site_id)
-        inflight = run_registry.get_in_flight_run_for_site(site_id)
-        if inflight is not None:
-            return inflight
-
-    from src.db.pool import get_pool
-
-    pool = get_pool()
-    with pool.connection() as conn:
-        latest = repo.get_latest_run_for_site(conn, site_id)
-    if latest and str(latest.get("status") or "") not in ("completed", "failed"):
-        return latest
-    return None
+def _status_row_for_site(site_id: str) -> dict | None:
+    """In-memory only — live status for this API instance while the worker runs."""
+    return run_registry.get_active_run_for_site(site_id)
 
 
 def _request_id(request: Request) -> str | None:
@@ -145,11 +115,7 @@ def create_run(
             detail=google_maps_config_error(),
         )
 
-    active = None
-    if worker_mode() != "job":
-        active = run_registry.get_active_run_for_site(site_id)
-    else:
-        active = run_registry.get_in_flight_run_for_site(site_id)
+    active = run_registry.get_active_run_for_site(site_id)
     if active is not None:
         log_action(
             logger,
@@ -187,12 +153,7 @@ def create_run(
         run_registry.remove_run(run_id)
         raise
 
-    # Cloud Run Job workers run in separate processes; their completion cannot clear
-    # this API instance's in-memory registry. Drop the slot after dispatch so new
-    # runs are not permanently blocked with 409 already_running.
-    if worker_mode() == "job":
-        run_registry.track_in_flight_run(run_spec)
-        run_registry.remove_run(run_id)
+    run_registry.mark_run_running(run_id, message="Lead run in progress…")
 
     log_action(
         logger,
@@ -203,7 +164,7 @@ def create_run(
             "source_type": source_type,
             "site_id": site_id,
             "list_name": body.list_name.strip() or None,
-            "status": "queued",
+            "status": "running",
         },
         traces=[(202, "worker enqueued")],
         request_id=rid,
@@ -217,10 +178,10 @@ def get_active_run_progress(
     site_id: str = Query(..., min_length=1),
     _: None = Depends(require_api_token),
 ) -> ActiveRunResponse:
-    """Return in-progress run status for a site (poll while worker executes)."""
+    """Return in-progress run status for a site (in-memory on this API instance)."""
     site_id = site_id.strip()
     rid = _request_id(request)
-    row = _progress_row_for_site(site_id)
+    row = _status_row_for_site(site_id)
     if row is None:
         return _idle_active_response()
 
@@ -246,17 +207,9 @@ def get_run(
 ) -> RunResponse:
     site_id = site_id.strip()
     rid = _request_id(request)
+
     active = run_registry.get_run(run_id)
     if active is not None and active.get("site_id") == site_id:
-        from src.db.pool import get_pool
-
-        pool = get_pool()
-        with pool.connection() as conn:
-            persisted = repo.get_run_for_site(conn, run_id, site_id)
-        if persisted and str(persisted.get("status") or "") in ("completed", "failed"):
-            run_registry.clear_in_flight_run(run_id)
-            return _run_response(persisted)
-
         payload = serialize_row(repo.run_to_status_payload(active))
         log_run_poll(
             run_id,
@@ -269,23 +222,6 @@ def get_run(
         )
         return RunResponse(**payload)
 
-    inflight = run_registry.get_in_flight_run(run_id)
-    if inflight is not None and inflight.get("site_id") == site_id:
-        _maybe_clear_in_flight(run_id, site_id)
-        inflight = run_registry.get_in_flight_run(run_id)
-        if inflight is not None and inflight.get("site_id") == site_id:
-            payload = serialize_row(repo.run_to_status_payload(inflight))
-            log_run_poll(
-                run_id,
-                status=str(payload.get("status") or ""),
-                source_type=str(payload.get("source_type") or "") or None,
-                message=payload.get("message"),
-                error=payload.get("error"),
-                running=bool(payload.get("running")),
-                request_id=rid,
-            )
-            return RunResponse(**payload)
-
     from src.db.pool import get_pool
 
     pool = get_pool()
@@ -293,7 +229,6 @@ def get_run(
         row = repo.get_run_for_site(conn, run_id, site_id)
     if not row:
         raise HTTPException(status_code=404, detail="run not found")
-    run_registry.clear_in_flight_run(run_id)
     payload = repo.run_to_status_payload(row)
     log_run_poll(
         run_id,

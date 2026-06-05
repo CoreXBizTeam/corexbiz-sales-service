@@ -83,8 +83,7 @@
         envLabelEl.textContent = data.environment || "—";
         overviewStatusEl.textContent = "";
         var rows = [
-          ["Worker mode", data.worker_mode],
-          ["Cloud Run job", data.cloud_run_job || "—"],
+          ["Pipeline", "inline (background thread on this service)"],
           ["Database", JSON.stringify(data.database || {})],
           ["Google Maps", data.google_maps && data.google_maps.configured ? "configured" : "not configured"],
           ["API docs", data.api_docs],
@@ -162,7 +161,7 @@
       .then(function (res) { return res.json(); })
       .then(function (data) {
         var runs = data.runs || [];
-        runsStatusEl.textContent = runs.length + " run(s) tracked on this Cloud Run instance (queued, running, or dispatched).";
+        runsStatusEl.textContent = runs.length + " run(s) in memory on this instance.";
         runsTbody.innerHTML = runs.map(function (row) {
           return "<tr><td class=\"small\"><code>" + escapeHtml(row.id) + "</code></td>" +
             "<td>" + escapeHtml(row.site_id) + "</td>" +

@@ -1,28 +1,24 @@
-"""Dispatch pipeline runs to background workers."""
+"""Dispatch pipeline runs in a background thread on the API process."""
 
 from __future__ import annotations
 
 import logging
 import os
-import subprocess
-import sys
-import tempfile
-from pathlib import Path
-from typing import Any, Dict
+import threading
+from typing import Any
 
 from src.log import get_logger, log_action
-from src.worker.job_handoff import RunSpecError, encode_run_spec, validate_run_spec, write_run_spec_file
+from src.worker.job_handoff import RunSpecError, validate_run_spec
 
 logger = get_logger(__name__)
 
-ROOT = Path(__file__).resolve().parents[2]
 
-
-def worker_mode() -> str:
+def _test_worker_mode() -> str:
+    """Test-only overrides (sync/disabled). Production always uses inline threads."""
     return (os.getenv("SALES_WORKER_MODE") or "inline").strip().lower()
 
 
-def _safe_execute(run: Dict[str, Any]) -> None:
+def _safe_execute(run: dict[str, Any]) -> None:
     from src.worker.run_job import execute_run
 
     try:
@@ -39,119 +35,10 @@ def _safe_execute(run: Dict[str, Any]) -> None:
         )
 
 
-def _write_job_config(run: Dict[str, Any]) -> Path:
-    runs_dir = ROOT / "runs"
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    fd, path = tempfile.mkstemp(suffix=".json", prefix="sales-run-", dir=str(runs_dir))
-    os.close(fd)
-    config_path = Path(path)
-    write_run_spec_file(run, config_path)
-    return config_path
-
-
-def _dispatch_subprocess_worker(run: Dict[str, Any]) -> None:
-    """Detached worker process (local substitute for Cloud Run Job)."""
-    validated = validate_run_spec(run)
-    config_path = _write_job_config(validated)
-    env = os.environ.copy()
-    try:
-        env["SALES_RUN_SPEC"] = encode_run_spec(validated)
-    except RunSpecError:
-        # Large criteria: config file handoff only (run_job reads --config first).
-        env.pop("SALES_RUN_SPEC", None)
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "src.worker.run_job", "--config", str(config_path)],
-        cwd=str(ROOT),
-        env=env,
-    )
-    log_action(
-        logger,
-        logging.INFO,
-        "WORKER",
-        f"run/{run.get('id')}",
-        {"pid": proc.pid, "mode": "subprocess", "config": str(config_path)},
-        traces=[("spawn", "detached worker started")],
-    )
-
-
-def _dispatch_cloud_run_worker(run: Dict[str, Any]) -> None:
-    from src.worker.cloud_run_dispatch import dispatch_cloud_run_job
-
-    try:
-        validated = validate_run_spec(run)
-        result = dispatch_cloud_run_job(validated)
-        log_action(
-            logger,
-            logging.INFO,
-            "WORKER",
-            f"run/{validated.get('id')}",
-            result,
-            traces=[("dispatch", "Cloud Run Job submitted")],
-        )
-    except (RunSpecError, RuntimeError) as exc:
-        log_action(
-            logger,
-            logging.ERROR,
-            "WORKER",
-            f"run/{run.get('id')}",
-            None,
-            traces=[("error", str(exc))],
-            exc_info=True,
-        )
-        raise
-
-
-def _dispatch_job_worker(run: Dict[str, Any]) -> None:
-    validate_run_spec(run)
-    from src.worker.cloud_run_dispatch import cloud_run_job_configured
-
-    if cloud_run_job_configured():
-        _dispatch_cloud_run_worker(run)
-    else:
-        _dispatch_subprocess_worker(run)
-
-
-def _start_job_worker_thread(run: Dict[str, Any]) -> None:
-    """Return immediately; Cloud Run Job API calls can take 10–30s on cold start."""
-
-    def _target() -> None:
-        try:
-            _dispatch_job_worker(run)
-        except Exception as exc:
-            log_action(
-                logger,
-                logging.ERROR,
-                "WORKER",
-                f"run/{run.get('id')}",
-                None,
-                traces=[("error", str(exc))],
-                exc_info=True,
-            )
-            from src.worker import run_registry
-
-            run_registry.remove_run(run.get("id"))
-
-    import threading
-
-    thread = threading.Thread(
-        target=_target,
-        name=f"sales-job-dispatch-{run.get('id')}",
-        daemon=True,
-    )
-    thread.start()
-
-
-def enqueue_run(run: Dict[str, Any]) -> None:
-    """
-    Dispatch a run based on SALES_WORKER_MODE:
-
-    - inline: background thread in API process (local dev)
-    - job: Cloud Run Job when SALES_CLOUD_RUN_JOB is set, else local subprocess
-    - sync: blocking execute in caller (tests)
-    - disabled: no-op (API tests)
-    """
+def enqueue_run(run: dict[str, Any]) -> None:
+    """Start the lead pipeline on a daemon thread (same process as the HTTP API)."""
     run_id = run.get("id")
-    mode = worker_mode()
+    mode = _test_worker_mode()
     log_action(
         logger,
         logging.INFO,
@@ -160,6 +47,11 @@ def enqueue_run(run: Dict[str, Any]) -> None:
         {"mode": mode},
         traces=[("enqueue", "dispatching pipeline")],
     )
+
+    try:
+        validated = validate_run_spec(run)
+    except RunSpecError:
+        raise
 
     if mode in ("disabled", "off", "none"):
         log_action(
@@ -173,35 +65,13 @@ def enqueue_run(run: Dict[str, Any]) -> None:
         return
 
     if mode == "sync":
-        validate_run_spec(run)
-        _safe_execute(run)
+        _safe_execute(validated)
         return
 
-    if mode == "job":
-        _start_job_worker_thread(run)
-        return
-
-    if mode == "inline":
-        validate_run_spec(run)
-        import threading
-
-        thread = threading.Thread(
-            target=_safe_execute,
-            args=(run,),
-            name=f"sales-run-{run_id}",
-            daemon=True,
-        )
-        thread.start()
-        return
-
-    log_action(
-        logger,
-        logging.WARNING,
-        "WORKER",
-        f"run/{run_id}",
-        {"mode": mode},
-        traces=[("fallback", "unknown SALES_WORKER_MODE; using inline")],
+    thread = threading.Thread(
+        target=_safe_execute,
+        args=(validated,),
+        name=f"sales-run-{run_id}",
+        daemon=True,
     )
-    import threading
-
-    threading.Thread(target=_safe_execute, args=(run,), daemon=True).start()
+    thread.start()

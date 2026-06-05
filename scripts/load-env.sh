@@ -66,7 +66,6 @@ apply_sales_env_defaults() {
   export POSTGRES_SCHEMA="${POSTGRES_SCHEMA:-sales-service}"
   export PORT="${PORT:-8080}"
   export HOST="${HOST:-127.0.0.1}"
-  export SALES_WORKER_MODE="${SALES_WORKER_MODE:-inline}"
   export API_TOKEN="${API_TOKEN:-dev-sales-service-token}"
   export WEBHOOK_SIGNING_SECRET="${WEBHOOK_SIGNING_SECRET:-dev-sales-webhook-secret}"
   export DB_AUTO_SEED="${DB_AUTO_SEED:-true}"

@@ -29,7 +29,6 @@ fi
 echo "Config:        ${ROOT}/.env"
 echo "COREX_SALES_SERVICE_ENV=${COREX_SALES_SERVICE_ENV}"
 echo "Postgres:      ${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB} (schema ${POSTGRES_SCHEMA})"
-echo "SALES_WORKER_MODE=${SALES_WORKER_MODE}"
 echo "SALES_SITE_ID=${SALES_SITE_ID:-(unset)}"
 echo "SALES_SITE_URL=${SALES_SITE_URL:-(unset)}"
 echo "API_TOKEN:     set (${#API_TOKEN} chars)"

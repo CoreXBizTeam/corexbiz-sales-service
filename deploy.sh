@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Deploy CoreX Sales Service + pipeline worker job to Google Cloud Run.
+# Deploy CoreX Sales Service to Google Cloud Run.
 #
-# Builds one container image, deploys the HTTP API service, and deploys a Cloud Run Job
-# that runs `python -m src.worker.run_job` with SALES_RUN_SPEC set per execution.
+# The HTTP API runs lead pipelines in background threads on the same service instance.
 #
 # Default target is **dev**. Use --production / -p for production.
 #
@@ -11,11 +10,8 @@
 #   Cloud SQL instance + DATABASE_URL or POSTGRES_* + CLOUD_SQL_CONNECTION_NAME
 #   Optional: Secret Manager secrets (SECRET_* in .env)
 #
-# After first deploy with SALES_WORKER_MODE=job:
-#   ./scripts/grant-cloud-run-iam.sh --dev
-#
 # Usage:
-#   ./deploy.sh              # dev API + job
+#   ./deploy.sh              # dev service
 #   ./deploy.sh --production
 #   SKIP_BUILD=1 ./deploy.sh --skip-build   # redeploy env/config only
 
@@ -25,8 +21,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 DEPLOY_TARGET="${DEPLOY_ENV:-dev}"
-DEPLOY_SERVICE=1
-DEPLOY_JOB=1
 SKIP_BUILD=0
 
 while [[ $# -gt 0 ]]; do
@@ -39,20 +33,12 @@ while [[ $# -gt 0 ]]; do
       DEPLOY_TARGET="dev"
       shift
       ;;
-    --service-only)
-      DEPLOY_JOB=0
-      shift
-      ;;
-    --job-only)
-      DEPLOY_SERVICE=0
-      shift
-      ;;
     --skip-build)
       SKIP_BUILD=1
       shift
       ;;
     --help | -h)
-      sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -90,27 +76,14 @@ else
   SERVICE_NAME="${CLOUD_RUN_DEV_SERVICE:-corex-sales-service-dev}"
 fi
 
-if [[ -n "${CLOUD_RUN_JOB_NAME:-}" ]]; then
-  JOB_NAME="${CLOUD_RUN_JOB_NAME}"
-elif [[ "${DEPLOY_TARGET}" == "production" ]]; then
-  JOB_NAME="${CLOUD_RUN_PRODUCTION_JOB_NAME:-corexbiz-sales-pipeline-job}"
-else
-  JOB_NAME="${CLOUD_RUN_DEV_JOB_NAME:-corex-sales-pipeline-job-dev}"
-fi
-
 # --- Cloud Run resource defaults (override via env) ---
 SERVICE_PORT="${SERVICE_PORT:-8080}"
-SERVICE_MEMORY="${SERVICE_MEMORY:-1Gi}"
-SERVICE_CPU="${SERVICE_CPU:-1}"
+SERVICE_MEMORY="${SERVICE_MEMORY:-2Gi}"
+SERVICE_CPU="${SERVICE_CPU:-2}"
 SERVICE_CONCURRENCY="${SERVICE_CONCURRENCY:-80}"
-SERVICE_TIMEOUT="${SERVICE_TIMEOUT:-300}"
+SERVICE_TIMEOUT="${SERVICE_TIMEOUT:-3600}"
 SERVICE_MIN_INSTANCES="${SERVICE_MIN_INSTANCES:-0}"
 SERVICE_MAX_INSTANCES="${SERVICE_MAX_INSTANCES:-10}"
-
-JOB_MEMORY="${JOB_MEMORY:-2Gi}"
-JOB_CPU="${JOB_CPU:-2}"
-JOB_TASK_TIMEOUT="${JOB_TASK_TIMEOUT:-3600}"
-JOB_MAX_RETRIES="${JOB_MAX_RETRIES:-1}"
 
 AUTH_FLAG=(--allow-unauthenticated)
 if [[ "${CLOUD_RUN_REQUIRE_AUTH:-}" == "1" || "${CLOUD_RUN_REQUIRE_AUTH:-}" == "true" ]]; then
@@ -175,7 +148,6 @@ if [[ -n "${ACTIVE_PROJECT}" && "${ACTIVE_PROJECT}" != "${PROJECT_ID}" ]]; then
 fi
 
 COMMON_ENV_PAIRS=()
-SERVICE_ONLY_ENV_PAIRS=()
 SECRET_PAIRS=()
 
 append_env() {
@@ -263,21 +235,6 @@ if [[ ${#SECRET_PAIRS[@]} -eq 0 ]]; then
   append_env API_TOKEN
 fi
 
-ENV_WORKER_MODE="${SALES_WORKER_MODE-}"
-if [[ -z "${ENV_WORKER_MODE}" ]]; then
-  ENV_WORKER_MODE="$(read_env_file_value SALES_WORKER_MODE 2>/dev/null || true)"
-fi
-if [[ -z "${ENV_WORKER_MODE}" || "${ENV_WORKER_MODE}" == "inline" ]]; then
-  if [[ "${ENV_WORKER_MODE}" == "inline" ]]; then
-    echo "note: overriding SALES_WORKER_MODE=inline → job for Cloud Run deploy" >&2
-  fi
-  ENV_WORKER_MODE="job"
-fi
-SERVICE_ONLY_ENV_PAIRS+=( "SALES_WORKER_MODE=${ENV_WORKER_MODE}" )
-SERVICE_ONLY_ENV_PAIRS+=( "SALES_CLOUD_RUN_JOB=${JOB_NAME}" )
-SERVICE_ONLY_ENV_PAIRS+=( "GCP_PROJECT_ID=${PROJECT_ID}" )
-SERVICE_ONLY_ENV_PAIRS+=( "GCP_REGION=${REGION}" )
-
 if [[ "${DEPLOY_TARGET}" == "production" ]]; then
   COMMON_ENV_PAIRS+=( "COREX_SALES_SERVICE_ENV=production" )
 else
@@ -327,8 +284,7 @@ if [[ -n "${SEED_DATABASE_URL}" && "${SEED_DATABASE_URL}" != *"/cloudsql/"* ]]; 
 fi
 
 ENV_FILE="$(mktemp)"
-SERVICE_ENV_FILE="$(mktemp)"
-trap 'rm -f "${ENV_FILE}" "${SERVICE_ENV_FILE}"' EXIT
+trap 'rm -f "${ENV_FILE}"' EXIT
 
 write_env_vars_file "${ENV_FILE}" "${COMMON_ENV_PAIRS[@]}"
 
@@ -344,9 +300,7 @@ fi
 LABEL="${DEPLOY_TARGET}"
 echo "Deploy target=${LABEL} project=${PROJECT_ID} region=${REGION}"
 echo "  image=${IMAGE}"
-echo "  service=${SERVICE_NAME} (deploy=${DEPLOY_SERVICE})"
-echo "  job=${JOB_NAME} (deploy=${DEPLOY_JOB})"
-echo "  SALES_WORKER_MODE=${ENV_WORKER_MODE}"
+echo "  service=${SERVICE_NAME}"
 
 if [[ "${SKIP_BUILD}" -eq 0 ]]; then
   echo "Building container image..."
@@ -358,88 +312,51 @@ else
   echo "Skipping image build (SKIP_BUILD=1)."
 fi
 
-if [[ "${DEPLOY_SERVICE}" -eq 1 ]]; then
-  write_env_vars_file "${SERVICE_ENV_FILE}" "${COMMON_ENV_PAIRS[@]}" "${SERVICE_ONLY_ENV_PAIRS[@]}"
-  echo "Deploying Cloud Run service ${SERVICE_NAME}..."
-  SERVICE_DEPLOY_ARGS=(
-    gcloud run deploy "${SERVICE_NAME}"
-    --project "${PROJECT_ID}"
-    --region "${REGION}"
-    --platform managed
-    --image "${IMAGE}"
-    --port "${SERVICE_PORT}"
-    --memory "${SERVICE_MEMORY}"
-    --cpu "${SERVICE_CPU}"
-    --concurrency "${SERVICE_CONCURRENCY}"
-    --timeout "${SERVICE_TIMEOUT}"
-    --min-instances "${SERVICE_MIN_INSTANCES}"
-    --max-instances "${SERVICE_MAX_INSTANCES}"
-    --startup-probe="httpGet.path=/health,httpGet.port=${SERVICE_PORT},initialDelaySeconds=5,timeoutSeconds=5,periodSeconds=10,failureThreshold=3"
-    --liveness-probe="httpGet.path=/health,httpGet.port=${SERVICE_PORT},initialDelaySeconds=10,timeoutSeconds=5,periodSeconds=30,failureThreshold=3"
-    --labels="env=${LABEL},component=corex-sales-service"
-    --quiet
-  )
-  if [[ ${#AUTH_FLAG[@]} -gt 0 ]]; then
-    SERVICE_DEPLOY_ARGS+=( "${AUTH_FLAG[@]}" )
-  fi
-  if [[ ${#GCLOUD_SQL[@]} -gt 0 ]]; then
-    SERVICE_DEPLOY_ARGS+=( "${GCLOUD_SQL[@]}" )
-  fi
-  if [[ ${#GCLOUD_SA[@]} -gt 0 ]]; then
-    SERVICE_DEPLOY_ARGS+=( "${GCLOUD_SA[@]}" )
-  fi
-  SERVICE_DEPLOY_ARGS+=( --env-vars-file="${SERVICE_ENV_FILE}" )
-  if [[ ${#GCLOUD_SECRETS[@]} -gt 0 ]]; then
-    SERVICE_DEPLOY_ARGS+=( "${GCLOUD_SECRETS[@]}" )
-  fi
-  "${SERVICE_DEPLOY_ARGS[@]}"
-
-  SERVICE_URL="$(gcloud run services describe "${SERVICE_NAME}" \
-    --project "${PROJECT_ID}" \
-    --region "${REGION}" \
-    --format='value(status.url)' 2>/dev/null || true)"
-  if [[ -n "${SERVICE_URL}" ]]; then
-    echo "Service URL: ${SERVICE_URL}"
-    echo "Health:      ${SERVICE_URL}/health"
-  fi
+echo "Deploying Cloud Run service ${SERVICE_NAME}..."
+SERVICE_DEPLOY_ARGS=(
+  gcloud run deploy "${SERVICE_NAME}"
+  --project "${PROJECT_ID}"
+  --region "${REGION}"
+  --platform managed
+  --image "${IMAGE}"
+  --port "${SERVICE_PORT}"
+  --memory "${SERVICE_MEMORY}"
+  --cpu "${SERVICE_CPU}"
+  --concurrency "${SERVICE_CONCURRENCY}"
+  --timeout "${SERVICE_TIMEOUT}"
+  --min-instances "${SERVICE_MIN_INSTANCES}"
+  --max-instances "${SERVICE_MAX_INSTANCES}"
+  --startup-probe="httpGet.path=/health,httpGet.port=${SERVICE_PORT},initialDelaySeconds=5,timeoutSeconds=5,periodSeconds=10,failureThreshold=3"
+  --liveness-probe="httpGet.path=/health,httpGet.port=${SERVICE_PORT},initialDelaySeconds=10,timeoutSeconds=5,periodSeconds=30,failureThreshold=3"
+  --labels="env=${LABEL},component=corex-sales-service"
+  --quiet
+)
+if [[ ${#AUTH_FLAG[@]} -gt 0 ]]; then
+  SERVICE_DEPLOY_ARGS+=( "${AUTH_FLAG[@]}" )
 fi
+if [[ ${#GCLOUD_SQL[@]} -gt 0 ]]; then
+  SERVICE_DEPLOY_ARGS+=( "${GCLOUD_SQL[@]}" )
+fi
+if [[ ${#GCLOUD_SA[@]} -gt 0 ]]; then
+  SERVICE_DEPLOY_ARGS+=( "${GCLOUD_SA[@]}" )
+fi
+SERVICE_DEPLOY_ARGS+=( --env-vars-file="${ENV_FILE}" )
+if [[ ${#GCLOUD_SECRETS[@]} -gt 0 ]]; then
+  SERVICE_DEPLOY_ARGS+=( "${GCLOUD_SECRETS[@]}" )
+fi
+"${SERVICE_DEPLOY_ARGS[@]}"
 
-if [[ "${DEPLOY_JOB}" -eq 1 ]]; then
-  echo "Deploying Cloud Run Job ${JOB_NAME}..."
-  JOB_DEPLOY_ARGS=(
-    gcloud run jobs deploy "${JOB_NAME}"
-    --project "${PROJECT_ID}"
-    --region "${REGION}"
-    --image "${IMAGE}"
-    --command python
-    --args=-m,src.worker.run_job
-    --tasks 1
-    --parallelism 1
-    --max-retries "${JOB_MAX_RETRIES}"
-    --task-timeout "${JOB_TASK_TIMEOUT}"
-    --memory "${JOB_MEMORY}"
-    --cpu "${JOB_CPU}"
-    --labels="env=${LABEL},component=corex-sales-pipeline"
-    --quiet
-  )
-  if [[ ${#GCLOUD_SQL[@]} -gt 0 ]]; then
-    JOB_DEPLOY_ARGS+=( "${GCLOUD_SQL[@]}" )
-  fi
-  if [[ ${#GCLOUD_SA[@]} -gt 0 ]]; then
-    JOB_DEPLOY_ARGS+=( "${GCLOUD_SA[@]}" )
-  fi
-  JOB_DEPLOY_ARGS+=( --env-vars-file="${ENV_FILE}" )
-  if [[ ${#GCLOUD_SECRETS[@]} -gt 0 ]]; then
-    JOB_DEPLOY_ARGS+=( "${GCLOUD_SECRETS[@]}" )
-  fi
-  "${JOB_DEPLOY_ARGS[@]}"
+SERVICE_URL="$(gcloud run services describe "${SERVICE_NAME}" \
+  --project "${PROJECT_ID}" \
+  --region "${REGION}" \
+  --format='value(status.url)' 2>/dev/null || true)"
+if [[ -n "${SERVICE_URL}" ]]; then
+  echo "Service URL: ${SERVICE_URL}"
+  echo "Health:      ${SERVICE_URL}/health"
 fi
 
 echo "Done."
-if [[ "${DEPLOY_SERVICE}" -eq 1 && "${ENV_WORKER_MODE}" == "job" ]]; then
-  echo "Tip: run ./scripts/grant-cloud-run-iam.sh --${DEPLOY_TARGET} if job execution returns 403."
-fi
-if [[ "${DEPLOY_SERVICE}" -eq 1 && -n "${SERVICE_URL:-}" ]]; then
+if [[ -n "${SERVICE_URL:-}" ]]; then
   echo ""
   echo "=== Stack: local WP + Cloud share + Cloud sales ==="
   echo "  Lead-run webhooks: Cloud sales POSTs to webhook_url on each run (WP tunnel URL from the plugin)."
