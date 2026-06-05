@@ -194,6 +194,79 @@ class TestWebhookUrlResolution(unittest.TestCase):
             "https://shop.example.com/wp-json/corexbiz/v1/sales/run-webhook",
         )
 
+    def test_cloud_dev_env_uses_stored_webhook_url(self) -> None:
+        """Cloud Run dev deploy uses COREX_SALES_SERVICE_ENV=dev — same as production for dispatch."""
+        wp_webhook = "https://wp-tunnel.trycloudflare.com/wp-json/corexbiz/v1/sales/run-webhook"
+        run = {"webhook_url": wp_webhook}
+        with mock.patch.dict(
+            os.environ,
+            {
+                "COREX_SALES_SERVICE_ENV": "dev",
+                "SALES_SITE_URL": "https://stale.example.com",
+            },
+            clear=False,
+        ):
+            url = resolve_webhook_url(run)
+        self.assertEqual(url, wp_webhook)
+
+
+class TestWebhookEnvironmentMatrix(unittest.TestCase):
+    """Lead-run webhook dispatch across WP × share × sales combinations."""
+
+    WP_PATH = "/wp-json/corexbiz/v1/sales/run-webhook"
+    WP_TUNNEL = "https://wp-tunnel.trycloudflare.com"
+    LIVE_TUNNEL = "https://live-wp-tunnel.trycloudflare.com"
+    CAPTURE = (
+        "https://share.run.app/admin/api/sales-service-verify/webhook-capture/x?token=t"
+    )
+
+    def test_local_wp_local_share_local_sales_wp_webhook_refresh(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"COREX_SALES_SERVICE_ENV": "local", "SALES_SITE_URL": self.LIVE_TUNNEL},
+            clear=False,
+        ):
+            url = resolve_webhook_url(
+                {
+                    "webhook_url": f"{self.WP_TUNNEL}{self.WP_PATH}",
+                }
+            )
+        self.assertEqual(url, f"{self.LIVE_TUNNEL}{self.WP_PATH}")
+
+    def test_local_wp_local_share_local_sales_verify_capture_preserved(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "COREX_SALES_SERVICE_ENV": "local",
+                "SALES_SITE_URL": self.LIVE_TUNNEL,
+            },
+            clear=False,
+        ):
+            url = resolve_webhook_url({"webhook_url": self.CAPTURE})
+        self.assertEqual(url, self.CAPTURE)
+
+    def test_local_wp_local_share_cloud_sales_uses_stored_wp_tunnel(self) -> None:
+        stored = f"{self.WP_TUNNEL}{self.WP_PATH}"
+        with mock.patch.dict(
+            os.environ,
+            {"COREX_SALES_SERVICE_ENV": "production", "SALES_SITE_URL": self.LIVE_TUNNEL},
+            clear=False,
+        ):
+            url = resolve_webhook_url({"webhook_url": stored})
+        self.assertEqual(url, stored)
+
+    def test_local_wp_cloud_share_cloud_sales_uses_stored_wp_tunnel(self) -> None:
+        stored = f"{self.WP_TUNNEL}{self.WP_PATH}"
+        with mock.patch.dict(os.environ, {"COREX_SALES_SERVICE_ENV": "production"}, clear=False):
+            url = resolve_webhook_url({"webhook_url": stored})
+        self.assertEqual(url, stored)
+
+    def test_cloud_wp_cloud_share_cloud_sales_uses_public_wp_url(self) -> None:
+        stored = f"https://shop.example.com{self.WP_PATH}"
+        with mock.patch.dict(os.environ, {"COREX_SALES_SERVICE_ENV": "production"}, clear=False):
+            url = resolve_webhook_url({"webhook_url": stored})
+        self.assertEqual(url, stored)
+
 
 if __name__ == "__main__":
     unittest.main()

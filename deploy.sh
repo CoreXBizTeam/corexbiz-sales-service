@@ -439,3 +439,12 @@ echo "Done."
 if [[ "${DEPLOY_SERVICE}" -eq 1 && "${ENV_WORKER_MODE}" == "job" ]]; then
   echo "Tip: run ./scripts/grant-cloud-run-iam.sh --${DEPLOY_TARGET} if job execution returns 403."
 fi
+if [[ "${DEPLOY_SERVICE}" -eq 1 && -n "${SERVICE_URL:-}" ]]; then
+  echo ""
+  echo "=== Stack: local WP + Cloud share + Cloud sales ==="
+  echo "  Lead-run webhooks: Cloud sales POSTs to webhook_url on each run (WP tunnel URL from the plugin)."
+  echo "  Do NOT set SALES_SITE_URL on Cloud Run — it is for local sales-service dev only."
+  echo "  Local WP: run corexbiz-core/scripts/cloudflared-dev-tunnel.sh and keep it up during runs."
+  echo "  Share-service: deploy with ./deploy.sh; PLATFORM_SELF_URL is set to the share Cloud Run URL."
+  echo "  WEBHOOK_SIGNING_SECRET here must match the WordPress plugin bundled secret."
+fi
