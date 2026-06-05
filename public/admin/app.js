@@ -21,7 +21,7 @@
   var adminLogoutBtn = document.getElementById("admin-logout-btn");
   var currentPanel = "overview";
 
-  function esc(s) {
+  function escapeHtml(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
@@ -91,7 +91,7 @@
           ["Health", data.health]
         ];
         overviewDl.innerHTML = rows.map(function (r) {
-          return "<dt class=\"col-sm-3\">" + esc(r[0]) + "</dt><dd class=\"col-sm-9\"><code>" + esc(r[1]) + "</code></dd>";
+          return "<dt class=\"col-sm-3\">" + escapeHtml(r[0]) + "</dt><dd class=\"col-sm-9\"><code>" + escapeHtml(r[1]) + "</code></dd>";
         }).join("");
       })
       .catch(function (err) {
@@ -100,30 +100,48 @@
   }
 
   function loadLogs() {
+    var rid = logsRequestInput && logsRequestInput.value ? logsRequestInput.value.trim() : "";
+    var qs = rid ? "?request_id=" + encodeURIComponent(rid) : "";
+    logsStatusEl.className = "small text-muted px-3 py-2 border-bottom";
     logsStatusEl.textContent = "Loading…";
-    var q = logsRequestInput.value.trim();
-    var url = "/admin/logs?limit=100" + (q ? "&request_id=" + encodeURIComponent(q) : "");
-    adminFetch(url)
-      .then(function (res) { return res.json(); })
-      .then(function (data) {
-        var hint = data.source ? " (" + data.source + ")" : "";
-        if (data.error) {
+    logsTbody.innerHTML = "";
+    adminFetch("/admin/logs" + qs)
+      .then(function (res) {
+        return res.json().then(function (data) {
+          return { ok: res.ok, data: data };
+        });
+      })
+      .then(function (result) {
+        var data = result.data || {};
+        var rows = Array.isArray(data.logs) ? data.logs : [];
+        if (!result.ok && data.error) {
+          logsStatusEl.className = "small text-danger px-3 py-2 border-bottom";
           logsStatusEl.textContent = data.error;
-        } else {
-          logsStatusEl.textContent = (data.logs ? data.logs.length : 0) + " entries" + hint;
+          return;
         }
+        var sourceNote =
+          data.source === "process"
+            ? "This Python process (stdout buffer)"
+            : data.source === "cloud_logging"
+              ? "Google Cloud Logging"
+              : "Logs";
+        logsStatusEl.className = "small text-muted px-3 py-2 border-bottom";
+        logsStatusEl.textContent =
+          rows.length + " entries (max 100) · " + sourceNote + " · GET /admin/logs" + qs;
         if (data.hint) {
           logsStatusEl.textContent += " — " + data.hint;
         }
-        logsTbody.innerHTML = (data.logs || []).map(function (row) {
-          var rid = row.request_id || "";
-          var ridCell = rid
-            ? "<span class=\"rid-link text-primary\" data-rid=\"" + esc(rid) + "\">" + esc(rid) + "</span>"
+        logsTbody.innerHTML = rows.map(function (row) {
+          var reqId = row.request_id || "";
+          var reqCell = reqId
+            ? "<span class=\"rid-link text-primary\" data-rid=\"" + escapeHtml(reqId) + "\">" + escapeHtml(reqId) + "</span>"
             : "—";
-          return "<tr><td class=\"text-nowrap small\">" + esc(row.timestamp) + "</td>" +
-            "<td>" + esc(row.severity) + "</td>" +
-            "<td class=\"small\">" + ridCell + "</td>" +
-            "<td class=\"log-message-cell\">" + esc(row.message) + "</td></tr>";
+          return (
+            "<tr><td class=\"text-nowrap small\">" + escapeHtml(row.timestamp || "") + "</td>" +
+            "<td class=\"small\">" + escapeHtml(row.severity || "") + "</td>" +
+            "<td class=\"log-message-cell\">" + escapeHtml(row.message || "") + "</td>" +
+            "<td class=\"small text-break\">" + reqCell + "</td></tr>"
+          );
         }).join("");
         logsTbody.querySelectorAll(".rid-link").forEach(function (el) {
           el.addEventListener("click", function () {
@@ -133,7 +151,8 @@
         });
       })
       .catch(function (err) {
-        logsStatusEl.textContent = "Failed: " + err.message;
+        logsStatusEl.className = "small text-danger px-3 py-2 border-bottom";
+        logsStatusEl.textContent = "Failed: " + (err && err.message ? err.message : String(err));
       });
   }
 
@@ -143,13 +162,13 @@
       .then(function (res) { return res.json(); })
       .then(function (data) {
         var runs = data.runs || [];
-        runsStatusEl.textContent = runs.length + " run(s) tracked on this Cloud Run instance.";
+        runsStatusEl.textContent = runs.length + " run(s) tracked on this Cloud Run instance (queued, running, or dispatched).";
         runsTbody.innerHTML = runs.map(function (row) {
-          return "<tr><td class=\"small\"><code>" + esc(row.id) + "</code></td>" +
-            "<td>" + esc(row.site_id) + "</td>" +
-            "<td>" + esc(row.status) + "</td>" +
-            "<td>" + esc(row.source_type) + "</td>" +
-            "<td class=\"small text-nowrap\">" + esc(row.created_at) + "</td></tr>";
+          return "<tr><td class=\"small\"><code>" + escapeHtml(row.id) + "</code></td>" +
+            "<td>" + escapeHtml(row.site_id) + "</td>" +
+            "<td>" + escapeHtml(row.status) + "</td>" +
+            "<td>" + escapeHtml(row.source_type) + "</td>" +
+            "<td class=\"small text-nowrap\">" + escapeHtml(row.created_at) + "</td></tr>";
         }).join("") || "<tr><td colspan=\"5\" class=\"text-muted\">No active runs in memory.</td></tr>";
       })
       .catch(function (err) {

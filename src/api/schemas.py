@@ -49,6 +49,20 @@ class RunResponse(BaseModel):
     running: bool = False
 
 
+class ActiveRunResponse(BaseModel):
+    """Progress snapshot for the current site run (poll while pipeline executes)."""
+
+    running: bool
+    status: str = "idle"
+    run_id: Optional[UUID] = None
+    list_name: Optional[str] = None
+    source_type: Optional[str] = None
+    message: Optional[str] = None
+    error: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+
+
 class PaginatedLeadsResponse(BaseModel):
     leads: List[Dict[str, Any]]
     count: int

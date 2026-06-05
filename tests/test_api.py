@@ -119,6 +119,46 @@ class TestApiRoutes(unittest.TestCase):
 
         run_registry.remove_run(run_id)
 
+    def test_get_active_run_idle_when_no_run(self) -> None:
+        response = self.client.get(
+            "/api/v1/runs/active",
+            headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+            params={"site_id": self.site_id},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["running"])
+        self.assertEqual(body["status"], "idle")
+        self.assertIsNone(body["run_id"])
+
+    def test_get_active_run_reports_queued_run(self) -> None:
+        create = self.client.post(
+            "/api/v1/runs",
+            headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+            json={
+                "list_name": "active poll test",
+                "source_type": "google_maps",
+                "criteria": {"cities_file": "cities.csv"},
+            },
+        )
+        self.assertEqual(create.status_code, 202)
+        run_id = create.json()["run_id"]
+
+        active = self.client.get(
+            "/api/v1/runs/active",
+            headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+            params={"site_id": self.site_id},
+        )
+        self.assertEqual(active.status_code, 200)
+        body = active.json()
+        self.assertTrue(body["running"])
+        self.assertEqual(body["run_id"], run_id)
+        self.assertEqual(body["status"], "queued")
+
+        from src.worker import run_registry
+
+        run_registry.remove_run(run_id)
+
     @mock.patch("src.api.routes.runs.enqueue_run")
     def test_job_mode_allows_back_to_back_runs(self, mock_enqueue) -> None:
         """API registry must not block forever when workers run as Cloud Run Jobs."""

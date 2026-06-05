@@ -28,6 +28,7 @@ def log_run_progress(
     data: Mapping[str, Any] | None = None,
     traces: Sequence[Trace] | None = None,
     level: int = logging.INFO,
+    request_id: str | None = None,
 ) -> None:
     """Emit a RUN progress line: run/{id} with status, stage, and optional traces."""
     payload: dict[str, Any] = {"status": status}
@@ -55,6 +56,7 @@ def log_run_progress(
         f"run/{run_id}",
         payload,
         traces=trace_list,
+        request_id=request_id,
     )
 
 
@@ -66,6 +68,7 @@ def log_run_poll(
     message: str | None = None,
     error: str | None = None,
     running: bool = False,
+    request_id: str | None = None,
 ) -> None:
     """Log GET /api/v1/runs/{id} status checks (verbose when SALES_LOG_RUN_POLLS=1)."""
     in_progress = running or status in ("queued", "running")
@@ -78,6 +81,7 @@ def log_run_poll(
             error=error,
             stage="poll",
             traces=[("GET", "/api/v1/runs/{id}")],
+            request_id=request_id,
         )
     else:
         log_action(
@@ -87,4 +91,5 @@ def log_run_poll(
             f"run/{run_id}",
             {"status": status, "stage": "poll"},
             traces=[("GET", "/api/v1/runs/{id}")],
+            request_id=request_id,
         )

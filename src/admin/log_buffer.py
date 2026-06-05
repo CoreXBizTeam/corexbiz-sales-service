@@ -99,7 +99,9 @@ def query_local_logs(*, request_id: str | None = None, limit: int = 100) -> list
             if level is not None:
                 severity = str(level).upper()
         else:
-            bm = re.search(r"\]\[(INFO|WARN|WARNING|ERROR|DEBUG)\]\[", raw, re.I)
+            bm = re.search(r"\]\[(info|warn|warning|error|debug)\]\[", raw, re.I)
+            if not bm:
+                bm = re.search(r"\]\s*\[(INFO|WARN|WARNING|ERROR|DEBUG)\]\s*\[", raw, re.I)
             if bm:
                 severity = bm.group(1).upper()
 

@@ -244,6 +244,20 @@ def get_run_for_site(conn: Connection, run_id: UUID, site_id: str) -> dict[str, 
     return rows[0] if rows else None
 
 
+def get_latest_run_for_site(conn: Connection, site_id: str) -> dict[str, Any] | None:
+    cur = conn.execute(
+        """
+        SELECT * FROM runs
+        WHERE site_id = %s
+        ORDER BY finished_at DESC NULLS LAST, started_at DESC NULLS LAST, id DESC
+        LIMIT 1
+        """,
+        (site_id,),
+    )
+    rows = _rows_to_dicts(cur)
+    return rows[0] if rows else None
+
+
 def _paginate(
     conn: Connection,
     table: str,
@@ -379,7 +393,7 @@ def run_to_status_payload(row: dict[str, Any]) -> dict[str, Any]:
     return {
         **row,
         "run_id": row.get("id"),
-        "running": status == "running",
+        "running": status in ("running", "queued", "dispatched"),
         "status": status,
     }
 

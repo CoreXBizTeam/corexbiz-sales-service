@@ -6,7 +6,7 @@
   <title>CoreX Sales Service — Admin</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous">
   <style>
-    #logs-table-body td.log-message-cell { max-width: 55vw; white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; }
+    #logs-table-body td.log-message-cell { max-width: 55vw; white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
     #logs-filter-request-id { max-width: 220px; }
     #admin-login-gate { max-width: 420px; margin: 4rem auto; }
     .rid-link { cursor: pointer; text-decoration: underline; }
@@ -66,33 +66,34 @@
         </div>
 
         <div id="panel-logs" class="card shadow-sm d-none">
-          <div class="card-header d-flex flex-wrap align-items-center gap-2">
-            <h2 class="h5 mb-0">Request logs</h2>
-            <span class="small text-muted ms-auto" id="logs-status">—</span>
-            <input type="text" class="form-control form-control-sm" id="logs-filter-request-id" placeholder="Filter by request_id">
-            <button type="button" class="btn btn-sm btn-outline-primary" id="logs-refresh-btn">Refresh</button>
-            <button type="button" class="btn btn-sm btn-outline-secondary" id="logs-clear-filter-btn">Clear filter</button>
-          </div>
-          <div class="card-body p-0">
-            <div class="table-responsive">
-              <table class="table table-sm table-striped mb-0">
-                <thead class="table-light">
-                  <tr>
-                    <th>Time</th>
-                    <th>Level</th>
-                    <th>Request ID</th>
-                    <th>Message</th>
-                  </tr>
-                </thead>
-                <tbody id="logs-table-body"></tbody>
-              </table>
+          <div class="card-header d-flex flex-wrap gap-2 align-items-center">
+            <h2 class="h5 mb-0">Cloud Run logs</h2>
+            <div class="ms-lg-auto d-flex flex-wrap gap-2 align-items-center">
+              <label class="small mb-0 text-muted" for="logs-filter-request-id">request_id</label>
+              <input type="text" class="form-control form-control-sm" id="logs-filter-request-id" placeholder="filter (optional)" autocomplete="off">
+              <button type="button" class="btn btn-sm btn-primary" id="logs-refresh-btn">Refresh</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="logs-clear-filter-btn">Clear</button>
             </div>
+          </div>
+          <div id="logs-status" class="small text-muted px-3 py-2 border-bottom">—</div>
+          <div class="table-responsive">
+            <table class="table table-striped table-sm table-hover mb-0">
+              <thead class="table-light">
+                <tr>
+                  <th scope="col">timestamp</th>
+                  <th scope="col">severity</th>
+                  <th scope="col">message</th>
+                  <th scope="col">request_id</th>
+                </tr>
+              </thead>
+              <tbody id="logs-table-body"></tbody>
+            </table>
           </div>
         </div>
 
         <div id="panel-runs" class="card shadow-sm d-none">
           <div class="card-header d-flex align-items-center justify-content-between">
-            <h2 class="h5 mb-0">In-memory runs (this instance)</h2>
+            <h2 class="h5 mb-0">Tracked runs (this instance)</h2>
             <button type="button" class="btn btn-sm btn-outline-primary" id="runs-refresh-btn">Refresh</button>
           </div>
           <div class="card-body p-0">

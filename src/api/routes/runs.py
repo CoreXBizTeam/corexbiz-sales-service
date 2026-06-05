@@ -5,10 +5,16 @@ from __future__ import annotations
 import logging
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from src.api.auth import require_api_token
-from src.api.schemas import ALLOWED_SOURCE_TYPES, CreateRunRequest, CreateRunResponse, RunResponse
+from src.api.schemas import (
+    ALLOWED_SOURCE_TYPES,
+    ActiveRunResponse,
+    CreateRunRequest,
+    CreateRunResponse,
+    RunResponse,
+)
 from src.api.serialize import serialize_row
 from src.config.env import (
     GOOGLE_MAPS_SOURCE_TYPES,
@@ -35,13 +41,77 @@ def _site_scope(body: CreateRunRequest) -> tuple[str, str]:
     return site_id, site_url
 
 
+def _active_run_response(row: dict) -> ActiveRunResponse:
+    payload = serialize_row(repo.run_to_status_payload(row))
+    run_id = payload.get("id") or payload.get("run_id")
+    status = str(payload.get("status") or "idle")
+    running = bool(payload.get("running"))
+    return ActiveRunResponse(
+        running=running,
+        status=status,
+        run_id=run_id,
+        list_name=payload.get("list_name"),
+        source_type=payload.get("source_type"),
+        message=payload.get("message"),
+        error=payload.get("error"),
+        started_at=payload.get("started_at"),
+        finished_at=payload.get("finished_at"),
+    )
+
+
+def _idle_active_response() -> ActiveRunResponse:
+    return ActiveRunResponse(running=False, status="idle")
+
+
+def _maybe_clear_in_flight(run_id: UUID, site_id: str) -> None:
+    from src.db.pool import get_pool
+
+    try:
+        pool = get_pool()
+    except Exception:
+        return
+    with pool.connection() as conn:
+        row = repo.get_run_for_site(conn, run_id, site_id)
+    if row and str(row.get("status") or "") in ("completed", "failed"):
+        run_registry.clear_in_flight_run(run_id)
+
+
+def _progress_row_for_site(site_id: str) -> dict | None:
+    active = run_registry.get_active_run_for_site(site_id)
+    if active is not None:
+        return active
+
+    inflight = run_registry.get_in_flight_run_for_site(site_id)
+    if inflight is not None:
+        _maybe_clear_in_flight(UUID(str(inflight["id"])), site_id)
+        inflight = run_registry.get_in_flight_run_for_site(site_id)
+        if inflight is not None:
+            return inflight
+
+    from src.db.pool import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        latest = repo.get_latest_run_for_site(conn, site_id)
+    if latest and str(latest.get("status") or "") not in ("completed", "failed"):
+        return latest
+    return None
+
+
+def _request_id(request: Request) -> str | None:
+    rid = getattr(request.state, "request_id", None)
+    return str(rid).strip() if rid else None
+
+
 @router.post("", status_code=status.HTTP_202_ACCEPTED, response_model=CreateRunResponse)
 def create_run(
     body: CreateRunRequest,
+    request: Request,
     _: None = Depends(require_api_token),
 ) -> CreateRunResponse:
     site_id, site_url = _site_scope(body)
     source_type = body.source_type.strip()
+    rid = _request_id(request)
     if source_type not in ALLOWED_SOURCE_TYPES:
         log_action(
             logger,
@@ -50,6 +120,7 @@ def create_run(
             "POST /api/v1/runs",
             {"source_type": source_type, "site_id": site_id},
             traces=[(400, "invalid source_type")],
+            request_id=rid,
         )
         raise HTTPException(
             status_code=400,
@@ -67,6 +138,7 @@ def create_run(
             "POST /api/v1/runs",
             {"source_type": source_type, "site_id": site_id},
             traces=[(503, "google_maps_not_configured")],
+            request_id=rid,
         )
         raise HTTPException(
             status_code=503,
@@ -76,6 +148,8 @@ def create_run(
     active = None
     if worker_mode() != "job":
         active = run_registry.get_active_run_for_site(site_id)
+    else:
+        active = run_registry.get_in_flight_run_for_site(site_id)
     if active is not None:
         log_action(
             logger,
@@ -84,6 +158,7 @@ def create_run(
             f"run/{active['id']}",
             {"site_id": site_id},
             traces=[(409, "run already in progress")],
+            request_id=rid,
         )
         raise HTTPException(
             status_code=409,
@@ -116,6 +191,7 @@ def create_run(
     # this API instance's in-memory registry. Drop the slot after dispatch so new
     # runs are not permanently blocked with 409 already_running.
     if worker_mode() == "job":
+        run_registry.track_in_flight_run(run_spec)
         run_registry.remove_run(run_id)
 
     log_action(
@@ -130,17 +206,46 @@ def create_run(
             "status": "queued",
         },
         traces=[(202, "worker enqueued")],
+        request_id=rid,
     )
     return CreateRunResponse(run_id=run_id, status="queued", started=True)
+
+
+@router.get("/active", response_model=ActiveRunResponse)
+def get_active_run_progress(
+    request: Request,
+    site_id: str = Query(..., min_length=1),
+    _: None = Depends(require_api_token),
+) -> ActiveRunResponse:
+    """Return in-progress run status for a site (poll while worker executes)."""
+    site_id = site_id.strip()
+    rid = _request_id(request)
+    row = _progress_row_for_site(site_id)
+    if row is None:
+        return _idle_active_response()
+
+    payload = _active_run_response(row)
+    log_run_poll(
+        row.get("id") or row.get("run_id"),
+        status=payload.status,
+        source_type=payload.source_type,
+        message=payload.message,
+        error=payload.error,
+        running=payload.running,
+        request_id=rid,
+    )
+    return payload
 
 
 @router.get("/{run_id}", response_model=RunResponse)
 def get_run(
     run_id: UUID,
+    request: Request,
     site_id: str = Query(..., min_length=1),
     _: None = Depends(require_api_token),
 ) -> RunResponse:
     site_id = site_id.strip()
+    rid = _request_id(request)
     active = run_registry.get_run(run_id)
     if active is not None and active.get("site_id") == site_id:
         from src.db.pool import get_pool
@@ -149,6 +254,7 @@ def get_run(
         with pool.connection() as conn:
             persisted = repo.get_run_for_site(conn, run_id, site_id)
         if persisted and str(persisted.get("status") or "") in ("completed", "failed"):
+            run_registry.clear_in_flight_run(run_id)
             return _run_response(persisted)
 
         payload = serialize_row(repo.run_to_status_payload(active))
@@ -159,8 +265,26 @@ def get_run(
             message=payload.get("message"),
             error=payload.get("error"),
             running=bool(payload.get("running")),
+            request_id=rid,
         )
         return RunResponse(**payload)
+
+    inflight = run_registry.get_in_flight_run(run_id)
+    if inflight is not None and inflight.get("site_id") == site_id:
+        _maybe_clear_in_flight(run_id, site_id)
+        inflight = run_registry.get_in_flight_run(run_id)
+        if inflight is not None and inflight.get("site_id") == site_id:
+            payload = serialize_row(repo.run_to_status_payload(inflight))
+            log_run_poll(
+                run_id,
+                status=str(payload.get("status") or ""),
+                source_type=str(payload.get("source_type") or "") or None,
+                message=payload.get("message"),
+                error=payload.get("error"),
+                running=bool(payload.get("running")),
+                request_id=rid,
+            )
+            return RunResponse(**payload)
 
     from src.db.pool import get_pool
 
@@ -169,6 +293,7 @@ def get_run(
         row = repo.get_run_for_site(conn, run_id, site_id)
     if not row:
         raise HTTPException(status_code=404, detail="run not found")
+    run_registry.clear_in_flight_run(run_id)
     payload = repo.run_to_status_payload(row)
     log_run_poll(
         run_id,
@@ -177,5 +302,6 @@ def get_run(
         message=payload.get("message"),
         error=payload.get("error"),
         running=bool(payload.get("running")),
+        request_id=rid,
     )
     return _run_response(row)

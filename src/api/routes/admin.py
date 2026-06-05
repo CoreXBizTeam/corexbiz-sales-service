@@ -107,7 +107,7 @@ def admin_overview() -> dict[str, Any]:
 
 @router.get("/admin/api/runs", dependencies=[Depends(require_admin)])
 def admin_active_runs() -> dict[str, Any]:
-    runs = [_serialize_run(row) for row in run_registry.list_runs()]
+    runs = [_serialize_run(row) for row in run_registry.list_all_tracked_runs()]
     return {"runs": runs, "count": len(runs)}
 
 
