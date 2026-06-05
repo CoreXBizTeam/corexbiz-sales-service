@@ -112,7 +112,7 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(get_resp.status_code, 200)
         run = get_resp.json()
         self.assertEqual(run["id"], run_id)
-        self.assertEqual(run["status"], "running")
+        self.assertEqual(run["status"], "queued")
         self.assertTrue(run["running"])
 
         from src.worker import run_registry
@@ -153,14 +153,14 @@ class TestApiRoutes(unittest.TestCase):
         body = active.json()
         self.assertTrue(body["running"])
         self.assertEqual(body["run_id"], run_id)
-        self.assertEqual(body["status"], "running")
+        self.assertEqual(body["status"], "queued")
 
         from src.worker import run_registry
 
         run_registry.remove_run(run_id)
 
-    @mock.patch("src.api.routes.runs.enqueue_run")
-    def test_second_run_returns_409_while_first_is_in_memory(self, mock_enqueue) -> None:
+    @mock.patch("src.api.routes.runs.enqueue_run", side_effect=[1, 2])
+    def test_second_run_queues_without_overwriting_first(self, mock_enqueue) -> None:
         from src.api.main import create_app
         from src.worker import run_registry
 
@@ -179,12 +179,14 @@ class TestApiRoutes(unittest.TestCase):
         second = client.post(
             "/api/v1/runs",
             headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
-            json=payload,
+            json={**payload, "list_name": "concurrency test 2"},
         )
         self.assertEqual(first.status_code, 202)
-        self.assertEqual(second.status_code, 409)
-        self.assertEqual(mock_enqueue.call_count, 1)
-        self.assertEqual(len(run_registry.list_runs()), 1)
+        self.assertEqual(second.status_code, 202)
+        self.assertEqual(mock_enqueue.call_count, 2)
+        self.assertEqual(len(run_registry.list_runs()), 2)
+        self.assertEqual(first.json()["queue_position"], 1)
+        self.assertEqual(second.json()["queue_position"], 2)
         run_registry.clear_runs()
 
     def test_create_run_rejects_invalid_source_type(self) -> None:

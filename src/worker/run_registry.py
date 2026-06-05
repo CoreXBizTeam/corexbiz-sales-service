@@ -1,6 +1,6 @@
-"""In-process status for active runs on this API instance (poll + admin only).
+"""In-process status for queued and running jobs (poll + admin only).
 
-Register on start; worker calls remove_run when the pipeline finishes (inline worker).
+Each accepted run gets its own registry row; workers remove on finish.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ class RunRegistry:
         self._lock = threading.Lock()
         self._runs: dict[str, dict[str, Any]] = {}
 
-    def register(self, run: dict[str, Any]) -> None:
+    def register(self, run: dict[str, Any], *, message: str | None = None) -> None:
         run_id = str(run["id"])
         with self._lock:
             self._runs[run_id] = {
@@ -30,7 +30,7 @@ class RunRegistry:
                 "id": run_id,
                 "status": "queued",
                 "error": None,
-                "message": None,
+                "message": message or "Lead run queued…",
                 "started_at": None,
                 "finished_at": None,
                 "created_at": _utcnow(),
@@ -53,14 +53,29 @@ class RunRegistry:
             row = self._runs.get(key)
             return dict(row) if row else None
 
-    def get_active_for_site(self, site_id: str) -> dict[str, Any] | None:
+    def count_for_site(self, site_id: str, *, statuses: tuple[str, ...] = ("queued", "running")) -> int:
         with self._lock:
-            for row in self._runs.values():
-                if row.get("site_id") != site_id:
-                    continue
-                if row.get("status") in ("queued", "running"):
-                    return dict(row)
-        return None
+            return sum(
+                1
+                for row in self._runs.values()
+                if row.get("site_id") == site_id and row.get("status") in statuses
+            )
+
+    def get_active_for_site(self, site_id: str) -> dict[str, Any] | None:
+        """Return the running run for a site, else the oldest queued run."""
+        with self._lock:
+            matches = [
+                dict(row)
+                for row in self._runs.values()
+                if row.get("site_id") == site_id and row.get("status") in ("queued", "running")
+            ]
+        if not matches:
+            return None
+        running = [row for row in matches if row.get("status") == "running"]
+        if running:
+            return running[0]
+        matches.sort(key=lambda row: row.get("created_at") or _utcnow())
+        return matches[0]
 
     def remove(self, run_id: UUID | str) -> None:
         with self._lock:
@@ -78,8 +93,8 @@ class RunRegistry:
 _registry = RunRegistry()
 
 
-def register_run(run: dict[str, Any]) -> None:
-    _registry.register(run)
+def register_run(run: dict[str, Any], *, message: str | None = None) -> None:
+    _registry.register(run, message=message)
 
 
 def mark_run_running(run_id: UUID | str, *, message: str | None = None) -> None:
@@ -100,6 +115,10 @@ def remove_run(run_id: UUID | str) -> None:
 
 def list_runs() -> list[dict[str, Any]]:
     return _registry.list_runs()
+
+
+def count_active_runs_for_site(site_id: str) -> int:
+    return _registry.count_for_site(site_id)
 
 
 def clear_runs() -> None:

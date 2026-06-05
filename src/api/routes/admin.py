@@ -23,7 +23,8 @@ from src.admin.config import AdminAuthConfig
 from src.admin.session import COOKIE_NAME, read_cookie
 from src.config.env import google_maps_configured
 from src.db.connection import resolve_database_url
-from src.worker import run_registry
+from src.worker import job_queue, run_registry
+from src.worker.worker_pool import max_workers, pool_started
 
 _ADMIN_DIR = Path(__file__).resolve().parents[3] / "public" / "admin"
 
@@ -96,6 +97,11 @@ def admin_overview() -> dict[str, Any]:
     return {
         "environment": _admin_env_label(),
         "service": "corex-sales-service",
+        "worker_pool": {
+            "size": max_workers(),
+            "started": pool_started(),
+            "pending_jobs": job_queue.pending_count(),
+        },
         "database": db_status,
         "google_maps": {"configured": google_maps_configured()},
         "api_docs": "/docs",

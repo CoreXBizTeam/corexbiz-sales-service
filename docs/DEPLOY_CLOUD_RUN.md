@@ -1,6 +1,6 @@
 # Deploy CoreX Sales Service to Google Cloud Run
 
-The sales service is a **Cloud Run service** running FastAPI (`uvicorn src.api.main:app`) on port `8080`. Lead pipelines run in **background threads on the same instance**; in-memory run status is cleared when the worker finishes.
+The sales service is a **Cloud Run service** running FastAPI (`uvicorn src.api.main:app`) on port `8080`. Accepted runs go into an **in-process FIFO queue**; a **worker pool** (default **4** threads) executes pipelines and POSTs webhooks when done.
 
 ## Prerequisites
 
@@ -50,8 +50,9 @@ Options:
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `SERVICE_MEMORY` | `2Gi` | Pipeline runs in-process |
-| `SERVICE_CPU` | `2` | Pipeline runs in-process |
+| `SERVICE_MEMORY` | `2Gi` | Worker pool + API |
+| `SERVICE_CPU` | `2` | Worker pool + API |
+| `SALES_WORKER_POOL_SIZE` | `4` | Max concurrent pipeline workers |
 | `SERVICE_CONCURRENCY` | `80` | HTTP concurrency |
 | `SERVICE_TIMEOUT` | `3600` | Max request + background run window (seconds) |
 | `SERVICE_MAX_INSTANCES` | `10` | Scale-out limit |

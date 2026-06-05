@@ -24,7 +24,7 @@ from src.config.env import (
 from src.db import repository as repo
 from src.log import get_logger, log_action, log_run_poll
 from src.worker.enqueue import enqueue_run
-from src.worker import run_registry
+from src.worker import job_queue, run_registry
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 logger = get_logger(__name__)
@@ -115,26 +115,6 @@ def create_run(
             detail=google_maps_config_error(),
         )
 
-    active = run_registry.get_active_run_for_site(site_id)
-    if active is not None:
-        log_action(
-            logger,
-            logging.INFO,
-            "RUN",
-            f"run/{active['id']}",
-            {"site_id": site_id},
-            traces=[(409, "run already in progress")],
-            request_id=rid,
-        )
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "already_running",
-                "message": "A lead run is already in progress.",
-                "run_id": str(active["id"]),
-            },
-        )
-
     run_id = uuid4()
     run_spec = repo.run_spec_from_request(
         run_id=run_id,
@@ -146,14 +126,13 @@ def create_run(
         notes=body.notes,
         webhook_url=body.webhook_url or repo.default_webhook_url(site_url),
     )
-    run_registry.register_run(run_spec)
+    run_registry.register_run(run_spec, message="Lead run queued…")
     try:
-        enqueue_run(run_spec)
+        queue_position = enqueue_run(run_spec)
     except Exception:
         run_registry.remove_run(run_id)
+        job_queue.remove_job(str(run_id))
         raise
-
-    run_registry.mark_run_running(run_id, message="Lead run in progress…")
 
     log_action(
         logger,
@@ -164,12 +143,18 @@ def create_run(
             "source_type": source_type,
             "site_id": site_id,
             "list_name": body.list_name.strip() or None,
-            "status": "running",
+            "status": "queued",
+            "queue_position": queue_position,
         },
-        traces=[(202, "worker enqueued")],
+        traces=[(202, "run queued")],
         request_id=rid,
     )
-    return CreateRunResponse(run_id=run_id, status="queued", started=True)
+    return CreateRunResponse(
+        run_id=run_id,
+        status="queued",
+        started=True,
+        queue_position=max(queue_position, 1),
+    )
 
 
 @router.get("/active", response_model=ActiveRunResponse)

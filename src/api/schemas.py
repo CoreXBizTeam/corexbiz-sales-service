@@ -27,6 +27,7 @@ class CreateRunResponse(BaseModel):
     run_id: UUID
     status: str = "queued"
     started: bool = True
+    queue_position: int = Field(default=1, ge=0)
 
 
 class RunResponse(BaseModel):

@@ -32,6 +32,22 @@ class TestRunRegistry(unittest.TestCase):
         self.assertEqual(active["status"], "queued")
         self.assertEqual(active["id"], str(run_id))
 
+    def test_multiple_queued_runs_for_same_site(self) -> None:
+        first_id = uuid.uuid4()
+        second_id = uuid.uuid4()
+        site_id = "site-a"
+        run_registry.register_run(
+            {"id": str(first_id), "site_id": site_id, "source_type": "google_maps", "criteria": {}}
+        )
+        run_registry.register_run(
+            {"id": str(second_id), "site_id": site_id, "source_type": "google_maps", "criteria": {}}
+        )
+        self.assertEqual(run_registry.count_active_runs_for_site(site_id), 2)
+        active = run_registry.get_active_run_for_site(site_id)
+        self.assertIsNotNone(active)
+        assert active is not None
+        self.assertEqual(active["id"], str(first_id))
+
     def test_running_then_remove(self) -> None:
         run_id = uuid.uuid4()
         run_registry.register_run(

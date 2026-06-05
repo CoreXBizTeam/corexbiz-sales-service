@@ -64,6 +64,13 @@ async def lifespan(app: FastAPI):
             None,
             traces=[("warn", "DATABASE_URL not configured — Postgres features disabled")],
         )
+
+    from src.worker.worker_pool import ensure_worker_pool_started
+
+    mode = (os.getenv("SALES_WORKER_MODE") or "pool").strip().lower()
+    if mode not in ("disabled", "off", "none", "sync"):
+        ensure_worker_pool_started()
+
     yield
     close_pool()
 

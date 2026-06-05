@@ -83,7 +83,8 @@
         envLabelEl.textContent = data.environment || "—";
         overviewStatusEl.textContent = "";
         var rows = [
-          ["Pipeline", "inline (background thread on this service)"],
+          ["Worker pool", JSON.stringify(data.worker_pool || {})],
+          ["Pipeline", "queued jobs + worker pool (max 4)"],
           ["Database", JSON.stringify(data.database || {})],
           ["Google Maps", data.google_maps && data.google_maps.configured ? "configured" : "not configured"],
           ["API docs", data.api_docs],

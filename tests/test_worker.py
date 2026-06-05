@@ -257,15 +257,18 @@ class TestExecuteRun(unittest.TestCase):
         self.assertEqual(run["status"], "completed")
 
 
-class TestEnqueueInline(unittest.TestCase):
-    def test_inline_starts_background_thread(self) -> None:
-        from src.worker import enqueue as enqueue_mod
+class TestEnqueuePool(unittest.TestCase):
+    def test_pool_enqueues_without_executing_inline(self) -> None:
+        from src.worker import enqueue as enqueue_mod, job_queue
 
+        job_queue.clear_queue()
         run = _run_spec(uuid.uuid4(), "enqueue-test")
-        with mock.patch.object(enqueue_mod, "_safe_execute") as safe:
-            with mock.patch.dict(os.environ, {"SALES_WORKER_MODE": "inline"}):
-                enqueue_mod.enqueue_run(run)
-        safe.assert_called_once_with(run)
+        with mock.patch("src.worker.worker_pool.ensure_worker_pool_started"):
+            with mock.patch.dict(os.environ, {"SALES_WORKER_MODE": "pool"}, clear=False):
+                position = enqueue_mod.enqueue_run(run)
+        self.assertEqual(position, 1)
+        self.assertEqual(job_queue.pending_count(), 1)
+        job_queue.clear_queue()
 
 
 if __name__ == "__main__":
