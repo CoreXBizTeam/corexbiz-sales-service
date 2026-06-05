@@ -111,6 +111,36 @@ def _dispatch_job_worker(run: Dict[str, Any]) -> None:
         _dispatch_subprocess_worker(run)
 
 
+def _start_job_worker_thread(run: Dict[str, Any]) -> None:
+    """Return immediately; Cloud Run Job API calls can take 10–30s on cold start."""
+
+    def _target() -> None:
+        try:
+            _dispatch_job_worker(run)
+        except Exception as exc:
+            log_action(
+                logger,
+                logging.ERROR,
+                "WORKER",
+                f"run/{run.get('id')}",
+                None,
+                traces=[("error", str(exc))],
+                exc_info=True,
+            )
+            from src.worker import run_registry
+
+            run_registry.remove_run(run.get("id"))
+
+    import threading
+
+    thread = threading.Thread(
+        target=_target,
+        name=f"sales-job-dispatch-{run.get('id')}",
+        daemon=True,
+    )
+    thread.start()
+
+
 def enqueue_run(run: Dict[str, Any]) -> None:
     """
     Dispatch a run based on SALES_WORKER_MODE:
@@ -148,7 +178,7 @@ def enqueue_run(run: Dict[str, Any]) -> None:
         return
 
     if mode == "job":
-        _dispatch_job_worker(run)
+        _start_job_worker_thread(run)
         return
 
     if mode == "inline":

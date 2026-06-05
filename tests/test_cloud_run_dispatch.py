@@ -116,6 +116,9 @@ class TestEnqueueJobMode(unittest.TestCase):
                 ):
                     with mock.patch.dict(os.environ, {"SALES_WORKER_MODE": "job"}, clear=False):
                         enqueue_mod.enqueue_run(run)
+                        deadline = time.time() + 2.0
+                        while not cloud_dispatch.called and time.time() < deadline:
+                            time.sleep(0.01)
 
         cloud_dispatch.assert_called_once_with(run)
         subprocess_dispatch.assert_not_called()
@@ -132,6 +135,9 @@ class TestEnqueueJobMode(unittest.TestCase):
                 ):
                     with mock.patch.dict(os.environ, {"SALES_WORKER_MODE": "job"}, clear=False):
                         enqueue_mod.enqueue_run(run)
+                        deadline = time.time() + 2.0
+                        while not subprocess_dispatch.called and time.time() < deadline:
+                            time.sleep(0.01)
 
         subprocess_dispatch.assert_called_once_with(run)
         cloud_dispatch.assert_not_called()
