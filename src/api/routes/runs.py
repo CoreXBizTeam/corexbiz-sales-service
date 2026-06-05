@@ -17,7 +17,7 @@ from src.config.env import (
 )
 from src.db import repository as repo
 from src.log import get_logger, log_action, log_run_poll
-from src.worker.enqueue import enqueue_run
+from src.worker.enqueue import enqueue_run, worker_mode
 from src.worker import run_registry
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -73,7 +73,9 @@ def create_run(
             detail=google_maps_config_error(),
         )
 
-    active = run_registry.get_active_run_for_site(site_id)
+    active = None
+    if worker_mode() != "job":
+        active = run_registry.get_active_run_for_site(site_id)
     if active is not None:
         log_action(
             logger,
@@ -104,7 +106,18 @@ def create_run(
         webhook_url=body.webhook_url or repo.default_webhook_url(site_url),
     )
     run_registry.register_run(run_spec)
-    enqueue_run(run_spec)
+    try:
+        enqueue_run(run_spec)
+    except Exception:
+        run_registry.remove_run(run_id)
+        raise
+
+    # Cloud Run Job workers run in separate processes; their completion cannot clear
+    # this API instance's in-memory registry. Drop the slot after dispatch so new
+    # runs are not permanently blocked with 409 already_running.
+    if worker_mode() == "job":
+        run_registry.remove_run(run_id)
+
     log_action(
         logger,
         logging.INFO,

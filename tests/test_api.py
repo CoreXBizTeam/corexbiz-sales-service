@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import unittest
 import uuid
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
@@ -116,6 +117,43 @@ class TestApiRoutes(unittest.TestCase):
         from src.worker import run_registry
 
         run_registry.remove_run(run_id)
+
+    @mock.patch("src.api.routes.runs.enqueue_run")
+    def test_job_mode_allows_back_to_back_runs(self, mock_enqueue) -> None:
+        """API registry must not block forever when workers run as Cloud Run Jobs."""
+        prev_mode = os.environ.get("SALES_WORKER_MODE")
+        os.environ["SALES_WORKER_MODE"] = "job"
+        try:
+            from src.api.main import create_app
+            from src.worker import run_registry
+
+            client = TestClient(create_app())
+            run_registry.clear_runs()
+            payload = {
+                "list_name": "job mode test",
+                "source_type": "google_maps",
+                "criteria": {"cities_file": "cities.csv"},
+            }
+            first = client.post(
+                "/api/v1/runs",
+                headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+                json=payload,
+            )
+            second = client.post(
+                "/api/v1/runs",
+                headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+                json=payload,
+            )
+            self.assertEqual(first.status_code, 202)
+            self.assertEqual(second.status_code, 202)
+            self.assertNotEqual(first.json()["run_id"], second.json()["run_id"])
+            self.assertEqual(mock_enqueue.call_count, 2)
+            self.assertEqual(len(run_registry.list_runs()), 0)
+        finally:
+            if prev_mode is None:
+                os.environ.pop("SALES_WORKER_MODE", None)
+            else:
+                os.environ["SALES_WORKER_MODE"] = prev_mode
 
     def test_create_run_rejects_invalid_source_type(self) -> None:
         response = self.client.post(
