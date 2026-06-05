@@ -12,7 +12,7 @@ from uuid import UUID
 import httpx
 
 from src.api.serialize import serialize_row, serialize_value
-from src.lib.sales_run_webhook_sign import sign_payload
+from src.lib.sales_run_webhook_sign import REQUEST_PATH, sign_payload
 from src.log import get_logger, log_action
 
 logger = get_logger(__name__)
@@ -30,12 +30,21 @@ def _is_local_env() -> bool:
     return os.getenv("COREX_SALES_SERVICE_ENV", "local").strip().lower() == "local"
 
 
+def _is_wp_plugin_webhook_url(url: str) -> bool:
+    """True when URL targets the WordPress run-webhook REST route."""
+    stored = (url or "").strip()
+    if not stored:
+        return False
+    return stored.rstrip("/").endswith(REQUEST_PATH)
+
+
 def resolve_webhook_url(run: Dict[str, Any], *, override: str | None = None) -> str:
     """
     Pick the webhook target URL.
 
-    Local dev: prefer SALES_SITE_URL (current tunnel) over the URL stored on the run,
-    so a restarted cloudflared tunnel still works when the run completes.
+    Local dev: refresh WP plugin webhooks from SALES_SITE_URL when the tunnel
+    rotates. Custom URLs (e.g. share-service admin verify) always use the
+    stored webhook_url from the run.
     """
     explicit = (override or "").strip()
     if explicit:
@@ -43,6 +52,9 @@ def resolve_webhook_url(run: Dict[str, Any], *, override: str | None = None) -> 
 
     stored = (run.get("webhook_url") or "").strip()
     if not _is_local_env():
+        return stored
+
+    if stored and not _is_wp_plugin_webhook_url(stored):
         return stored
 
     site_url = (os.getenv("SALES_SITE_URL") or "").strip()
@@ -60,7 +72,7 @@ def resolve_webhook_url(run: Dict[str, Any], *, override: str | None = None) -> 
                 "WEBHOOK",
                 f"run/{run.get('id') or ''}",
                 {"stored_url": stored, "dispatch_url": refreshed},
-                traces=[("refresh", "using SALES_SITE_URL for local webhook dispatch")],
+                traces=[("refresh", "using SALES_SITE_URL for local WP webhook dispatch")],
             )
         return refreshed
 

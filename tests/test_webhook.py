@@ -155,6 +155,27 @@ class TestWebhookUrlResolution(unittest.TestCase):
             "https://live-tunnel.trycloudflare.com/wp-json/corexbiz/v1/sales/run-webhook",
         )
 
+    def test_local_keeps_share_service_verify_webhook_url(self) -> None:
+        capture_url = (
+            "https://strike-burton-bestsellers-garage.trycloudflare.com"
+            "/admin/api/sales-service-verify/webhook-capture/run-1?token=abc"
+        )
+        run = {
+            "id": "run-1",
+            "webhook_url": capture_url,
+            "site_url": "https://strike-burton-bestsellers-garage.trycloudflare.com",
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "COREX_SALES_SERVICE_ENV": "local",
+                "SALES_SITE_URL": "https://wp-tunnel.trycloudflare.com",
+            },
+            clear=False,
+        ):
+            url = resolve_webhook_url(run)
+        self.assertEqual(url, capture_url)
+
     def test_production_uses_stored_webhook_url(self) -> None:
         run = {
             "webhook_url": "https://shop.example.com/wp-json/corexbiz/v1/sales/run-webhook",
