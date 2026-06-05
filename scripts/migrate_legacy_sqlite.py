@@ -67,6 +67,11 @@ def main() -> None:
         help="Re-dispatch run.completed webhook for an existing Postgres run",
     )
     parser.add_argument(
+        "--webhook-url",
+        default="",
+        help="Override webhook URL (with --webhook-only). Local default: SALES_SITE_URL + /wp-json/...",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate SQLite only; do not write Postgres",
@@ -79,7 +84,12 @@ def main() -> None:
         from src.worker.webhook import notify_run_finished
 
         run_id = UUID(str(args.webhook_only).strip())
-        notify_run_finished(run_id, event="run.completed")
+        webhook_url = (getattr(args, "webhook_url", None) or "").strip() or None
+        notify_run_finished(
+            run_id,
+            event="run.completed",
+            webhook_url=webhook_url,
+        )
         print(f"Webhook dispatch attempted for run {run_id}")
         return
 

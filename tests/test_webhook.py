@@ -14,7 +14,11 @@ from src.lib.sales_run_webhook_sign import (
     derive_secret,
     sign_payload,
 )
-from src.worker.webhook import build_run_webhook_body, dispatch_run_webhook
+from src.worker.webhook import (
+    build_run_webhook_body,
+    dispatch_run_webhook,
+    resolve_webhook_url,
+)
 
 
 class TestWebhookSigning(unittest.TestCase):
@@ -51,7 +55,14 @@ class TestWebhookDispatch(unittest.TestCase):
         self.assertFalse(ok)
 
     def test_skips_when_no_secret(self) -> None:
-        with mock.patch.dict(os.environ, {"WEBHOOK_SIGNING_SECRET": ""}, clear=False):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "WEBHOOK_SIGNING_SECRET": "",
+                "COREX_SALES_SERVICE_ENV": "production",
+            },
+            clear=False,
+        ):
             ok = dispatch_run_webhook(
                 {
                     "id": "x",
@@ -88,7 +99,12 @@ class TestWebhookDispatch(unittest.TestCase):
         fake_client.__exit__ = mock.Mock(return_value=False)
 
         with mock.patch.dict(
-            os.environ, {"WEBHOOK_SIGNING_SECRET": "test-webhook-secret"}, clear=False
+            os.environ,
+            {
+                "WEBHOOK_SIGNING_SECRET": "test-webhook-secret",
+                "COREX_SALES_SERVICE_ENV": "production",
+            },
+            clear=False,
         ):
             with mock.patch("httpx.Client", return_value=fake_client):
                 ok = dispatch_run_webhook(run, event="run.completed", qualified_count=3)
@@ -116,6 +132,46 @@ class TestWebhookBody(unittest.TestCase):
         )
         self.assertEqual(body["run_id"], "abc")
         self.assertEqual(body["qualified_count"], 2)
+
+
+class TestWebhookUrlResolution(unittest.TestCase):
+    def test_local_prefers_sales_site_url_over_stored_webhook(self) -> None:
+        run = {
+            "id": "run-1",
+            "webhook_url": "https://dead-tunnel.trycloudflare.com/wp-json/corexbiz/v1/sales/run-webhook",
+            "site_url": "https://dead-tunnel.trycloudflare.com",
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "COREX_SALES_SERVICE_ENV": "local",
+                "SALES_SITE_URL": "https://live-tunnel.trycloudflare.com",
+            },
+            clear=False,
+        ):
+            url = resolve_webhook_url(run)
+        self.assertEqual(
+            url,
+            "https://live-tunnel.trycloudflare.com/wp-json/corexbiz/v1/sales/run-webhook",
+        )
+
+    def test_production_uses_stored_webhook_url(self) -> None:
+        run = {
+            "webhook_url": "https://shop.example.com/wp-json/corexbiz/v1/sales/run-webhook",
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "COREX_SALES_SERVICE_ENV": "production",
+                "SALES_SITE_URL": "https://other.example.com",
+            },
+            clear=False,
+        ):
+            url = resolve_webhook_url(run)
+        self.assertEqual(
+            url,
+            "https://shop.example.com/wp-json/corexbiz/v1/sales/run-webhook",
+        )
 
 
 if __name__ == "__main__":
