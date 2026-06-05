@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from src.api.auth import (
     get_request_token,
+    require_api_token,
     site_identity_from_headers,
     verify_api_token,
 )
@@ -50,6 +51,9 @@ class TestServiceToken(unittest.TestCase):
 
     def test_verify_accepts_match(self) -> None:
         verify_api_token("secret")
+
+    def test_require_api_token_is_exported(self) -> None:
+        self.assertTrue(callable(require_api_token))
 
     def test_verify_unset_server_token(self) -> None:
         os.environ["API_TOKEN"] = ""

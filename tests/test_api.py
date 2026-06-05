@@ -19,9 +19,6 @@ def _db_configured() -> bool:
 
 AUTH_HEADERS = {
     "Authorization": f"Bearer {TEST_API_TOKEN}",
-    "X-Corexbiz-Server-Id": "api-test-site",
-    "X-Corexbiz-Site-Url": "https://api-test.example.com",
-    "X-Corexbiz-Plugin-Version": "1.0.0-test",
 }
 
 
@@ -108,6 +105,7 @@ class TestApiRoutes(unittest.TestCase):
         get_resp = self.client.get(
             f"/api/v1/runs/{run_id}",
             headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+            params={"site_id": "dev-server"},
         )
         self.assertEqual(get_resp.status_code, 200)
         run = get_resp.json()
@@ -189,6 +187,7 @@ class TestApiRoutes(unittest.TestCase):
         patch_resp = self.client.patch(
             f"/api/v1/qualified-leads/{lead_id}",
             headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+            params={"site_id": self.site_id},
             json={"review_status": "approved", "notes": "looks good"},
         )
         self.assertEqual(patch_resp.status_code, 200)
@@ -197,18 +196,12 @@ class TestApiRoutes(unittest.TestCase):
         run_leads_resp = self.client.get(
             f"/api/v1/runs/{run_id}/leads",
             headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+            params={"site_id": self.site_id},
         )
         self.assertEqual(run_leads_resp.status_code, 200)
         self.assertGreaterEqual(run_leads_resp.json()["total"], 1)
 
         self._cleanup_run(run_id)
-
-    def test_site_bundle_forbidden_for_other_site(self) -> None:
-        response = self.client.get(
-            "/api/v1/sites/other-site/leads-bundle",
-            headers=AUTH_HEADERS,
-        )
-        self.assertEqual(response.status_code, 403)
 
     def _cleanup_run(self, run_id: uuid.UUID) -> None:
         with self.pool.connection() as conn:

@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from src.api.auth import SiteIdentity, require_site_identity
+from src.api.auth import require_api_token
 from src.api.schemas import ALLOWED_SOURCE_TYPES, CreateRunRequest, CreateRunResponse, RunResponse
 from src.api.serialize import serialize_row
 from src.config.env import (
@@ -29,11 +29,18 @@ def _run_response(row: dict) -> RunResponse:
     return RunResponse(**payload)
 
 
+def _site_scope(body: CreateRunRequest) -> tuple[str, str]:
+    site_id = (body.site_id or "dev-server").strip()
+    site_url = (body.site_url or "http://localhost").strip()
+    return site_id, site_url
+
+
 @router.post("", status_code=status.HTTP_202_ACCEPTED, response_model=CreateRunResponse)
 def create_run(
     body: CreateRunRequest,
-    identity: SiteIdentity = Depends(require_site_identity),
+    _: None = Depends(require_api_token),
 ) -> CreateRunResponse:
+    site_id, site_url = _site_scope(body)
     source_type = body.source_type.strip()
     if source_type not in ALLOWED_SOURCE_TYPES:
         log_action(
@@ -41,7 +48,7 @@ def create_run(
             logging.WARNING,
             "RUN",
             "POST /api/v1/runs",
-            {"source_type": source_type, "site_id": identity.server_id},
+            {"source_type": source_type, "site_id": site_id},
             traces=[(400, "invalid source_type")],
         )
         raise HTTPException(
@@ -58,7 +65,7 @@ def create_run(
             logging.WARNING,
             "RUN",
             "POST /api/v1/runs",
-            {"source_type": source_type, "site_id": identity.server_id},
+            {"source_type": source_type, "site_id": site_id},
             traces=[(503, "google_maps_not_configured")],
         )
         raise HTTPException(
@@ -66,14 +73,14 @@ def create_run(
             detail=google_maps_config_error(),
         )
 
-    active = run_registry.get_active_run_for_site(identity.server_id)
+    active = run_registry.get_active_run_for_site(site_id)
     if active is not None:
         log_action(
             logger,
             logging.INFO,
             "RUN",
             f"run/{active['id']}",
-            {"site_id": identity.server_id},
+            {"site_id": site_id},
             traces=[(409, "run already in progress")],
         )
         raise HTTPException(
@@ -88,13 +95,13 @@ def create_run(
     run_id = uuid4()
     run_spec = repo.run_spec_from_request(
         run_id=run_id,
-        site_id=identity.server_id,
-        site_url=identity.site_url,
+        site_id=site_id,
+        site_url=site_url,
         list_name=body.list_name.strip() or None,
         source_type=source_type,
         criteria=body.criteria,
         notes=body.notes,
-        webhook_url=body.webhook_url or repo.default_webhook_url(identity.site_url),
+        webhook_url=body.webhook_url or repo.default_webhook_url(site_url),
     )
     run_registry.register_run(run_spec)
     enqueue_run(run_spec)
@@ -105,7 +112,7 @@ def create_run(
         f"run/{run_id}",
         {
             "source_type": source_type,
-            "site_id": identity.server_id,
+            "site_id": site_id,
             "list_name": body.list_name.strip() or None,
             "status": "queued",
         },
@@ -117,15 +124,17 @@ def create_run(
 @router.get("/{run_id}", response_model=RunResponse)
 def get_run(
     run_id: UUID,
-    identity: SiteIdentity = Depends(require_site_identity),
+    site_id: str = Query(..., min_length=1),
+    _: None = Depends(require_api_token),
 ) -> RunResponse:
+    site_id = site_id.strip()
     active = run_registry.get_run(run_id)
-    if active is not None and active.get("site_id") == identity.server_id:
+    if active is not None and active.get("site_id") == site_id:
         from src.db.pool import get_pool
 
         pool = get_pool()
         with pool.connection() as conn:
-            persisted = repo.get_run_for_site(conn, run_id, identity.server_id)
+            persisted = repo.get_run_for_site(conn, run_id, site_id)
         if persisted and str(persisted.get("status") or "") in ("completed", "failed"):
             return _run_response(persisted)
 
@@ -144,7 +153,7 @@ def get_run(
 
     pool = get_pool()
     with pool.connection() as conn:
-        row = repo.get_run_for_site(conn, run_id, identity.server_id)
+        row = repo.get_run_for_site(conn, run_id, site_id)
     if not row:
         raise HTTPException(status_code=404, detail="run not found")
     payload = repo.run_to_status_payload(row)

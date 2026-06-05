@@ -74,6 +74,16 @@ def site_identity_from_headers(
     )
 
 
+async def require_api_token(
+    authorization: Optional[str] = Header(default=None),
+    x_api_token: Optional[str] = Header(default=None, alias="X-Api-Token"),
+) -> None:
+    """Bearer (or X-Api-Token) only — used for internal platform proxy calls."""
+    verify_api_token(
+        get_request_token(authorization=authorization, x_api_token=x_api_token)
+    )
+
+
 async def require_site_identity(
     request: Request,
     authorization: Optional[str] = Header(default=None),

@@ -19,6 +19,8 @@ class CreateRunRequest(BaseModel):
     criteria: Dict[str, Any] = Field(default_factory=dict)
     notes: str = Field(default="", max_length=4000)
     webhook_url: Optional[str] = Field(default=None, max_length=2000)
+    site_id: Optional[str] = Field(default=None, max_length=255)
+    site_url: Optional[str] = Field(default=None, max_length=2000)
 
 
 class CreateRunResponse(BaseModel):

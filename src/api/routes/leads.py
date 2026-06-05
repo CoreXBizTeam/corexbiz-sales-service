@@ -6,7 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from src.api.auth import SiteIdentity, require_site_identity
+from src.api.auth import require_api_token
 from src.api.schemas import (
     LeadsBundleResponse,
     PaginatedLeadsResponse,
@@ -23,19 +23,21 @@ router = APIRouter(tags=["leads"])
 @router.get("/runs/{run_id}/leads", response_model=PaginatedLeadsResponse)
 def get_run_qualified_leads(
     run_id: UUID,
+    site_id: str = Query(..., min_length=1),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=100, ge=1, le=500),
-    identity: SiteIdentity = Depends(require_site_identity),
+    _: None = Depends(require_api_token),
 ) -> PaginatedLeadsResponse:
+    site_id = site_id.strip()
     pool = get_pool()
     with pool.connection() as conn:
-        run = repo.get_run_for_site(conn, run_id, identity.server_id)
+        run = repo.get_run_for_site(conn, run_id, site_id)
         if not run:
             raise HTTPException(status_code=404, detail="run not found")
         leads, total = repo.list_qualified_for_run(
             conn,
             run_id,
-            identity.server_id,
+            site_id,
             page=page,
             per_page=per_page,
         )
@@ -54,11 +56,9 @@ def get_site_leads_bundle(
     site_id: str,
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=100, ge=1, le=500),
-    identity: SiteIdentity = Depends(require_site_identity),
+    _: None = Depends(require_api_token),
 ) -> LeadsBundleResponse:
-    if site_id != identity.server_id:
-        raise HTTPException(status_code=403, detail="site_id does not match authenticated site")
-
+    site_id = site_id.strip()
     pool = get_pool()
     with pool.connection() as conn:
         qualified, total_qualified = repo.list_qualified_for_site(
@@ -88,8 +88,10 @@ def get_site_leads_bundle(
 def patch_qualified_lead(
     lead_id: int,
     body: QualifiedLeadPatchRequest,
-    identity: SiteIdentity = Depends(require_site_identity),
+    site_id: str = Query(..., min_length=1),
+    _: None = Depends(require_api_token),
 ) -> QualifiedLeadPatchResponse:
+    site_id = site_id.strip()
     pool = get_pool()
     with pool.connection() as conn:
         with conn.transaction():
@@ -97,7 +99,7 @@ def patch_qualified_lead(
                 updated = repo.update_qualified_review(
                     conn,
                     lead_id,
-                    identity.server_id,
+                    site_id,
                     body.review_status,
                     body.notes,
                 )
