@@ -48,6 +48,7 @@ class RunResponse(BaseModel):
     finished_at: Optional[str] = None
     created_at: Optional[str] = None
     running: bool = False
+    queue_position: Optional[int] = Field(default=None, ge=1)
 
 
 class ActiveRunResponse(BaseModel):
@@ -62,6 +63,7 @@ class ActiveRunResponse(BaseModel):
     error: Optional[str] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+    queue_position: Optional[int] = Field(default=None, ge=1)
 
 
 class PaginatedLeadsResponse(BaseModel):

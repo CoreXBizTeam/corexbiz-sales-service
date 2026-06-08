@@ -109,15 +109,24 @@ class TestWebhookIntegration(unittest.TestCase):
             "notes": "",
             "webhook_url": f"http://127.0.0.1:{self.receiver.port}/wp-json/corexbiz/v1/sales/run-webhook",
         }
-        from src.worker import run_registry
+        from src.db import repository as repo
 
-        run_registry.register_run(self.run_spec)
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                repo.insert_queued_run(
+                    conn,
+                    run_id=self.run_id,
+                    site_id=self.site_id,
+                    site_url="http://localhost",
+                    list_name="webhook integration",
+                    source_type="manual_csv",
+                    criteria=self.run_spec["criteria"],
+                    webhook_url=self.run_spec["webhook_url"],
+                )
 
     def tearDown(self) -> None:
         from src.db.pool import close_pool
-        from src.worker import run_registry
 
-        run_registry.clear_runs()
         self.receiver.stop()
         with self.pool.connection() as conn:
             with conn.transaction():

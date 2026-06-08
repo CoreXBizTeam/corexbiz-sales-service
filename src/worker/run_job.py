@@ -14,7 +14,6 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from uuid import UUID
 
 from src.log import configure_logging, get_logger, log_action, log_run_progress
-from src.worker import run_registry
 from src.worker.job_handoff import RunSpecError, load_run_spec
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -253,7 +252,7 @@ def _persist_failed_run(run: Dict[str, Any], err: str) -> Dict[str, Any]:
 
 def execute_run(run: Dict[str, Any], *, sqlite_path: Optional[Path] = None) -> Dict[str, Any]:
     """
-    Execute pipeline for an in-memory run spec and persist results once at the end.
+    Execute pipeline for a run spec and persist results once at the end.
 
     Returns summary dict with status and sync counts.
     """
@@ -268,13 +267,22 @@ def execute_run(run: Dict[str, Any], *, sqlite_path: Optional[Path] = None) -> D
     site_id = str(run["site_id"])
     source_type = str(run.get("source_type") or "")
 
-    if run_registry.get_run(run_id) is not None:
-        run_registry.mark_run_running(
-            run_id,
-            message=f"Running pipeline ({source_type})…",
-        )
-        active = run_registry.get_run(run_id) or run
-        run = {**run, **active}
+    pool = get_pool()
+    with pool.connection() as conn:
+        existing = repo.get_run(conn, run_id)
+        if existing is not None:
+            existing_status = str(existing.get("status") or "")
+            if existing_status in ("completed", "failed"):
+                raise RuntimeError(f"run {run_id} already finished ({existing_status})")
+            if existing_status == "queued":
+                with conn.transaction():
+                    repo.mark_run_running(
+                        conn,
+                        run_id,
+                        message=f"Running pipeline ({source_type})…",
+                    )
+                existing = repo.get_run(conn, run_id) or existing
+            run = {**run, **repo.run_row_to_spec(existing)}
 
     log_run_progress(
         run_id,
@@ -285,7 +293,6 @@ def execute_run(run: Dict[str, Any], *, sqlite_path: Optional[Path] = None) -> D
         traces=[("start", "execute_run")],
     )
 
-    pool = get_pool()
     db_path = sqlite_path
     if db_path is None:
         temp_dir = Path(tempfile.mkdtemp(prefix="sales-run-"))
@@ -342,8 +349,6 @@ def execute_run(run: Dict[str, Any], *, sqlite_path: Optional[Path] = None) -> D
             data=counts,
             traces=[("done", "synced to Postgres")],
         )
-        if run_registry.get_run(run_id) is not None:
-            run_registry.remove_run(run_id)
         _dispatch_webhook(
             completed,
             event="run.completed",
@@ -363,13 +368,9 @@ def execute_run(run: Dict[str, Any], *, sqlite_path: Optional[Path] = None) -> D
         )
         failed = _persist_failed_run(run, err)
         summary.update({"status": "failed", "error": err})
-        if run_registry.get_run(run_id) is not None:
-            run_registry.remove_run(run_id)
         _dispatch_webhook(failed, event="run.failed", qualified_count=0)
         raise
     finally:
-        if run_registry.get_run(run_id) is not None:
-            run_registry.remove_run(run_id)
         if sqlite_path is None and db_path is not None:
             parent = db_path.parent
             try:

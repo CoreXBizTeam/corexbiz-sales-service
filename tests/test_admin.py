@@ -91,9 +91,9 @@ class TestAdminAuth(unittest.TestCase):
         self.assertTrue(any("[202]" in row.get("message", "") for row in run_lines))
         self.assertTrue(any("run_id" in row.get("message", "") for row in run_lines))
 
-        from src.worker import run_registry
+        from src.worker import job_queue
 
-        run_registry.clear_runs()
+        job_queue.clear_queue()
         os.environ.pop("API_TOKEN", None)
         os.environ.pop("SALES_WORKER_MODE", None)
 

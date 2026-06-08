@@ -1,6 +1,8 @@
 # Deploy CoreX Sales Service to Google Cloud Run
 
-The sales service is a **Cloud Run service** running FastAPI (`uvicorn src.api.main:app`) on port `8080`. Accepted runs go into an **in-process FIFO queue**; a **worker pool** (default **4** threads) executes pipelines and POSTs webhooks when done.
+The sales service is a **Cloud Run service** running FastAPI (`uvicorn src.api.main:app`) on port `8080`. Accepted runs are **inserted into Postgres** (`runs.status=queued`); execution is scheduled via **FastAPI BackgroundTasks** (keeps CPU after the 202 response) and a **worker pool** (default **4** threads) for orphaned queued jobs.
+
+**Cloud Run:** deploy with **`--no-cpu-throttling`** (default in `deploy.sh`). Without it, daemon worker threads stall after `POST /runs` returns 202 and admin verify / lead runs never webhooks back.
 
 ## Prerequisites
 
@@ -55,7 +57,8 @@ Options:
 | `SALES_WORKER_POOL_SIZE` | `4` | Max concurrent pipeline workers |
 | `SERVICE_CONCURRENCY` | `80` | HTTP concurrency |
 | `SERVICE_TIMEOUT` | `3600` | Max request + background run window (seconds) |
-| `SERVICE_MAX_INSTANCES` | `10` | Scale-out limit |
+| `SERVICE_MIN_INSTANCES` | `0` | Scale to zero when idle |
+| `SERVICE_MAX_INSTANCES` | `10` | Multi-instance; Postgres queue uses `SKIP LOCKED` |
 
 ## One-time IAM
 

@@ -198,11 +198,10 @@ class TestExecuteRun(unittest.TestCase):
         run_migrations()
 
     def setUp(self) -> None:
+        from src.db import repository as repo
         from src.db.pool import close_pool, get_pool
-        from src.worker import run_registry
 
         close_pool()
-        run_registry.clear_runs()
         self.pool = get_pool()
         self.run_id = uuid.uuid4()
         self.site_id = f"worker-exec-{uuid.uuid4().hex[:8]}"
@@ -211,13 +210,22 @@ class TestExecuteRun(unittest.TestCase):
             self.site_id,
             criteria={"csv_path": str(FIXTURE_CSV.relative_to(ROOT))},
         )
-        run_registry.register_run(self.run_spec)
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                repo.insert_queued_run(
+                    conn,
+                    run_id=self.run_id,
+                    site_id=self.site_id,
+                    site_url="http://localhost",
+                    list_name="worker test",
+                    source_type="manual_csv",
+                    criteria=self.run_spec["criteria"],
+                    webhook_url=self.run_spec.get("webhook_url"),
+                )
 
     def tearDown(self) -> None:
         from src.db.pool import close_pool
-        from src.worker import run_registry
 
-        run_registry.clear_runs()
         with self.pool.connection() as conn:
             with conn.transaction():
                 conn.execute(
@@ -242,12 +250,10 @@ class TestExecuteRun(unittest.TestCase):
         self.assertIsNotNone(run["finished_at"])
 
     def test_execute_run_rejects_duplicate_persist(self) -> None:
-        from src.worker import run_registry
         from src.worker.run_job import execute_run
 
         execute_run(self.run_spec)
-        run_registry.register_run(self.run_spec)
-        with self.assertRaises(Exception):
+        with self.assertRaises(RuntimeError):
             execute_run(self.run_spec)
 
         with self.pool.connection() as conn:
@@ -258,17 +264,49 @@ class TestExecuteRun(unittest.TestCase):
 
 
 class TestEnqueuePool(unittest.TestCase):
-    def test_pool_enqueues_without_executing_inline(self) -> None:
-        from src.worker import enqueue as enqueue_mod, job_queue
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not _db_configured():
+            raise unittest.SkipTest("DATABASE_URL not configured")
+
+        from src.db.migrate import run_migrations
+        from src.db.pool import close_pool, get_pool
+
+        close_pool()
+        run_migrations()
+        cls.pool = get_pool()
+
+    def tearDown(self) -> None:
+        from src.worker import job_queue
 
         job_queue.clear_queue()
-        run = _run_spec(uuid.uuid4(), "enqueue-test")
+
+    def test_pool_dispatches_without_executing_inline(self) -> None:
+        from src.db import repository as repo
+        from src.worker import enqueue as enqueue_mod
+
+        run_id = uuid.uuid4()
+        run = _run_spec(run_id, "enqueue-test")
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                repo.insert_queued_run(
+                    conn,
+                    run_id=run_id,
+                    site_id="enqueue-test",
+                    site_url="http://localhost",
+                    list_name="enqueue",
+                    source_type="manual_csv",
+                    criteria={},
+                )
         with mock.patch("src.worker.worker_pool.ensure_worker_pool_started"):
             with mock.patch.dict(os.environ, {"SALES_WORKER_MODE": "pool"}, clear=False):
-                position = enqueue_mod.enqueue_run(run)
-        self.assertEqual(position, 1)
-        self.assertEqual(job_queue.pending_count(), 1)
-        job_queue.clear_queue()
+                enqueue_mod.dispatch_run(run)
+        from src.worker import job_queue
+
+        self.assertGreaterEqual(job_queue.pending_count(), 1)
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                conn.execute("DELETE FROM runs WHERE id = %s", (run_id,))
 
 
 if __name__ == "__main__":

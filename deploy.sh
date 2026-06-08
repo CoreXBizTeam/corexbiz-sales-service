@@ -84,6 +84,9 @@ SERVICE_CONCURRENCY="${SERVICE_CONCURRENCY:-80}"
 SERVICE_TIMEOUT="${SERVICE_TIMEOUT:-3600}"
 SERVICE_MIN_INSTANCES="${SERVICE_MIN_INSTANCES:-0}"
 SERVICE_MAX_INSTANCES="${SERVICE_MAX_INSTANCES:-10}"
+# Cloud Run throttles CPU after the HTTP response unless disabled. In-process
+# workers need CPU after POST /runs returns 202 (BackgroundTasks + pool).
+SERVICE_CPU_THROTTLING="${SERVICE_CPU_THROTTLING:-0}"
 
 AUTH_FLAG=(--allow-unauthenticated)
 if [[ "${CLOUD_RUN_REQUIRE_AUTH:-}" == "1" || "${CLOUD_RUN_REQUIRE_AUTH:-}" == "true" ]]; then
@@ -343,6 +346,10 @@ fi
 SERVICE_DEPLOY_ARGS+=( --env-vars-file="${ENV_FILE}" )
 if [[ ${#GCLOUD_SECRETS[@]} -gt 0 ]]; then
   SERVICE_DEPLOY_ARGS+=( "${GCLOUD_SECRETS[@]}" )
+fi
+if [[ "${SERVICE_CPU_THROTTLING}" == "0" || "${SERVICE_CPU_THROTTLING}" == "false" ]]; then
+  SERVICE_DEPLOY_ARGS+=( --no-cpu-throttling )
+  echo "  cpu-throttling: disabled (required for in-process run workers after 202)"
 fi
 "${SERVICE_DEPLOY_ARGS[@]}"
 

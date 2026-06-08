@@ -23,7 +23,9 @@ from src.admin.config import AdminAuthConfig
 from src.admin.session import COOKIE_NAME, read_cookie
 from src.config.env import google_maps_configured
 from src.db.connection import resolve_database_url
-from src.worker import job_queue, run_registry
+from src.db import repository as repo
+from src.db.pool import get_pool
+from src.worker import job_queue
 from src.worker.worker_pool import max_workers, pool_started
 
 _ADMIN_DIR = Path(__file__).resolve().parents[3] / "public" / "admin"
@@ -111,7 +113,9 @@ def admin_overview() -> dict[str, Any]:
 
 @router.get("/admin/api/runs", dependencies=[Depends(require_admin)])
 def admin_active_runs() -> dict[str, Any]:
-    runs = [_serialize_run(row) for row in run_registry.list_runs()]
+    pool = get_pool()
+    with pool.connection() as conn:
+        runs = [_serialize_run(row) for row in repo.list_in_progress_runs(conn)]
     return {"runs": runs, "count": len(runs)}
 
 

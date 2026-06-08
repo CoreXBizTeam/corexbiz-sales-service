@@ -7,7 +7,7 @@ import os
 import threading
 
 from src.log import get_logger, log_action
-from src.worker import job_queue, run_registry
+from src.worker import job_queue
 from src.worker.run_executor import safe_execute_run
 
 logger = get_logger(__name__)
@@ -27,21 +27,23 @@ def max_workers() -> int:
 
 def _worker_loop(worker_index: int) -> None:
     while True:
-        run_id = job_queue.take_job(timeout=1.0)
-        if not run_id:
-            continue
-
-        run = run_registry.get_run(run_id)
+        run = job_queue.take_job(timeout=1.0)
         if run is None:
             continue
-        if str(run.get("status") or "") not in ("queued",):
-            continue
 
+        run_id = str(run.get("id") or "")
         source_type = str(run.get("source_type") or "")
-        run_registry.mark_run_running(
-            run_id,
-            message=f"Running pipeline ({source_type})…",
-        )
+        message = f"Running pipeline ({source_type})…"
+        run["message"] = message
+
+        from src.db import repository as repo
+        from src.db.pool import get_pool
+        from uuid import UUID
+
+        with get_pool().connection() as conn:
+            with conn.transaction():
+                repo.mark_run_running(conn, UUID(run_id), message=message)
+
         log_action(
             logger,
             logging.INFO,
@@ -84,7 +86,7 @@ def pool_started() -> bool:
 
 
 def reset_pool_for_tests() -> None:
-    """Tests only — pool threads are not stopped; clear queue + registry separately."""
+    """Tests only — pool threads are not stopped; clear queued runs separately."""
     global _pool_started
     with _pool_lock:
         _pool_started = False

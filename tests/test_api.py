@@ -54,25 +54,36 @@ class TestApiRoutes(unittest.TestCase):
         if not _db_configured():
             raise unittest.SkipTest("DATABASE_URL not configured")
 
+        os.environ["SALES_DISABLE_DOTENV"] = "1"
         os.environ["API_TOKEN"] = TEST_API_TOKEN
         os.environ["SALES_WORKER_MODE"] = "disabled"
         os.environ.setdefault("GOOGLE_MAPS_API_KEY", "test-google-maps-key")
         from src.api.main import create_app
         from src.db.migrate import run_migrations
         from src.db.pool import close_pool, get_pool
-        from src.worker import run_registry
 
         close_pool()
-        run_registry.clear_runs()
         run_migrations()
         cls.client = TestClient(create_app())
         cls.pool = get_pool()
         cls.site_id = "dev-server"
 
     def setUp(self) -> None:
-        from src.worker import run_registry
+        from src.worker import job_queue
 
-        run_registry.clear_runs()
+        job_queue.clear_queue()
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                conn.execute(
+                    "DELETE FROM runs WHERE site_id IN (%s, %s, %s, %s, %s)",
+                    (
+                        "dev-server",
+                        "site-a",
+                        "site-b",
+                        "job-queue-test",
+                        "enqueue-test",
+                    ),
+                )
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -115,9 +126,7 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(run["status"], "queued")
         self.assertTrue(run["running"])
 
-        from src.worker import run_registry
-
-        run_registry.remove_run(run_id)
+        self._cleanup_run(uuid.UUID(str(run_id)))
 
     def test_get_active_run_idle_when_no_run(self) -> None:
         response = self.client.get(
@@ -155,39 +164,67 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(body["run_id"], run_id)
         self.assertEqual(body["status"], "queued")
 
-        from src.worker import run_registry
+        self._cleanup_run(uuid.UUID(str(run_id)))
 
-        run_registry.remove_run(run_id)
+    def test_get_active_run_idle_for_other_site(self) -> None:
+        create = self.client.post(
+            "/api/v1/runs",
+            headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+            json={
+                "site_id": "site-a",
+                "list_name": "tenant isolation",
+                "source_type": "google_maps",
+                "criteria": {"cities_file": "cities.csv"},
+            },
+        )
+        self.assertEqual(create.status_code, 202)
+        run_id = create.json()["run_id"]
 
-    @mock.patch("src.api.routes.runs.enqueue_run", side_effect=[1, 2])
-    def test_second_run_queues_without_overwriting_first(self, mock_enqueue) -> None:
-        from src.api.main import create_app
-        from src.worker import run_registry
+        other_site = self.client.get(
+            "/api/v1/runs/active",
+            headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+            params={"site_id": "site-b"},
+        )
+        self.assertEqual(other_site.status_code, 200)
+        other_body = other_site.json()
+        self.assertFalse(other_body["running"])
+        self.assertEqual(other_body["status"], "idle")
+        self.assertIsNone(other_body["run_id"])
 
-        client = TestClient(create_app())
-        run_registry.clear_runs()
+        same_site = self.client.get(
+            "/api/v1/runs/active",
+            headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+            params={"site_id": "site-a"},
+        )
+        self.assertEqual(same_site.status_code, 200)
+        same_body = same_site.json()
+        self.assertTrue(same_body["running"])
+        self.assertEqual(same_body["run_id"], run_id)
+
+        self._cleanup_run(uuid.UUID(str(run_id)))
+
+    def test_second_run_queues_without_overwriting_first(self) -> None:
         payload = {
             "list_name": "concurrency test",
             "source_type": "google_maps",
             "criteria": {"cities_file": "cities.csv"},
         }
-        first = client.post(
+        first = self.client.post(
             "/api/v1/runs",
             headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
             json=payload,
         )
-        second = client.post(
+        second = self.client.post(
             "/api/v1/runs",
             headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
             json={**payload, "list_name": "concurrency test 2"},
         )
         self.assertEqual(first.status_code, 202)
         self.assertEqual(second.status_code, 202)
-        self.assertEqual(mock_enqueue.call_count, 2)
-        self.assertEqual(len(run_registry.list_runs()), 2)
         self.assertEqual(first.json()["queue_position"], 1)
         self.assertEqual(second.json()["queue_position"], 2)
-        run_registry.clear_runs()
+        self._cleanup_run(uuid.UUID(str(first.json()["run_id"])))
+        self._cleanup_run(uuid.UUID(str(second.json()["run_id"])))
 
     def test_create_run_rejects_invalid_source_type(self) -> None:
         response = self.client.post(

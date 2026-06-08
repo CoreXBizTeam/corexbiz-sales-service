@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 
 from src.api.auth import require_api_token
 from src.api.schemas import (
@@ -23,8 +23,7 @@ from src.config.env import (
 )
 from src.db import repository as repo
 from src.log import get_logger, log_action, log_run_poll
-from src.worker.enqueue import enqueue_run
-from src.worker import job_queue, run_registry
+from src.worker.enqueue import dispatch_run
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 logger = get_logger(__name__)
@@ -39,6 +38,18 @@ def _site_scope(body: CreateRunRequest) -> tuple[str, str]:
     site_id = (body.site_id or "dev-server").strip()
     site_url = (body.site_url or "http://localhost").strip()
     return site_id, site_url
+
+
+def _attach_queue_position(conn, row: dict) -> dict:
+    """Add queue_position when the run is still waiting in the global queue."""
+    if str(row.get("status") or "") != "queued":
+        return row
+    run_id = row.get("id")
+    if run_id is None:
+        return row
+    enriched = dict(row)
+    enriched["queue_position"] = repo.queue_position_for_run(conn, UUID(str(run_id)))
+    return enriched
 
 
 def _active_run_response(row: dict) -> ActiveRunResponse:
@@ -56,6 +67,7 @@ def _active_run_response(row: dict) -> ActiveRunResponse:
         error=payload.get("error"),
         started_at=payload.get("started_at"),
         finished_at=payload.get("finished_at"),
+        queue_position=payload.get("queue_position"),
     )
 
 
@@ -64,8 +76,15 @@ def _idle_active_response() -> ActiveRunResponse:
 
 
 def _status_row_for_site(site_id: str) -> dict | None:
-    """In-memory only — live status for this API instance while the worker runs."""
-    return run_registry.get_active_run_for_site(site_id)
+    """Live queued/running status from Postgres (multi-instance safe)."""
+    from src.db.pool import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        row = repo.get_in_progress_run_for_site(conn, site_id)
+        if row is not None:
+            row = _attach_queue_position(conn, row)
+    return row
 
 
 def _request_id(request: Request) -> str | None:
@@ -77,6 +96,7 @@ def _request_id(request: Request) -> str | None:
 def create_run(
     body: CreateRunRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     _: None = Depends(require_api_token),
 ) -> CreateRunResponse:
     site_id, site_url = _site_scope(body)
@@ -126,12 +146,30 @@ def create_run(
         notes=body.notes,
         webhook_url=body.webhook_url or repo.default_webhook_url(site_url),
     )
-    run_registry.register_run(run_spec, message="Lead run queued…")
+
+    from src.db.pool import get_pool
+
+    pool = get_pool()
     try:
-        queue_position = enqueue_run(run_spec)
+        with pool.connection() as conn:
+            with conn.transaction():
+                repo.insert_queued_run(
+                    conn,
+                    run_id=run_id,
+                    site_id=site_id,
+                    site_url=site_url,
+                    list_name=run_spec.get("list_name"),
+                    source_type=source_type,
+                    criteria=body.criteria,
+                    notes=body.notes,
+                    webhook_url=run_spec.get("webhook_url"),
+                )
+                queue_position = repo.queue_position_for_run(conn, run_id)
+        dispatch_run(run_spec, background_tasks=background_tasks)
     except Exception:
-        run_registry.remove_run(run_id)
-        job_queue.remove_job(str(run_id))
+        with pool.connection() as conn:
+            with conn.transaction():
+                repo.delete_queued_run(conn, run_id)
         raise
 
     log_action(
@@ -163,7 +201,7 @@ def get_active_run_progress(
     site_id: str = Query(..., min_length=1),
     _: None = Depends(require_api_token),
 ) -> ActiveRunResponse:
-    """Return in-progress run status for a site (in-memory on this API instance)."""
+    """Return in-progress run status for a site (Postgres queue + status)."""
     site_id = site_id.strip()
     rid = _request_id(request)
     row = _status_row_for_site(site_id)
@@ -193,25 +231,13 @@ def get_run(
     site_id = site_id.strip()
     rid = _request_id(request)
 
-    active = run_registry.get_run(run_id)
-    if active is not None and active.get("site_id") == site_id:
-        payload = serialize_row(repo.run_to_status_payload(active))
-        log_run_poll(
-            run_id,
-            status=str(payload.get("status") or ""),
-            source_type=str(payload.get("source_type") or "") or None,
-            message=payload.get("message"),
-            error=payload.get("error"),
-            running=bool(payload.get("running")),
-            request_id=rid,
-        )
-        return RunResponse(**payload)
-
     from src.db.pool import get_pool
 
     pool = get_pool()
     with pool.connection() as conn:
         row = repo.get_run_for_site(conn, run_id, site_id)
+        if row is not None:
+            row = _attach_queue_position(conn, row)
     if not row:
         raise HTTPException(status_code=404, detail="run not found")
     payload = repo.run_to_status_payload(row)

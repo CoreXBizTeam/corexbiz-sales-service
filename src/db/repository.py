@@ -151,6 +151,201 @@ def get_recent_exports(conn: Connection, limit: int = 5) -> list[dict[str, Any]]
     return _rows_to_dicts(cur)
 
 
+def _criteria_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def run_row_to_spec(row: dict[str, Any]) -> dict[str, Any]:
+    """Convert a runs table row to an in-memory run spec for the worker."""
+    return {
+        "id": str(row["id"]),
+        "site_id": str(row.get("site_id") or ""),
+        "site_url": row.get("site_url"),
+        "list_name": row.get("list_name"),
+        "source_type": str(row.get("source_type") or ""),
+        "criteria": _criteria_dict(row.get("criteria")),
+        "notes": str(row.get("notes") or ""),
+        "webhook_url": row.get("webhook_url"),
+        "status": str(row.get("status") or "queued"),
+        "message": row.get("message"),
+        "error": row.get("error"),
+        "started_at": row.get("started_at"),
+        "finished_at": row.get("finished_at"),
+        "created_at": row.get("created_at"),
+    }
+
+
+def insert_queued_run(
+    conn: Connection,
+    *,
+    run_id: UUID,
+    site_id: str,
+    site_url: str | None,
+    list_name: str | None,
+    source_type: str,
+    criteria: dict[str, Any],
+    notes: str = "",
+    webhook_url: str | None = None,
+    message: str = "Lead run queued…",
+) -> None:
+    """Enqueue a run in Postgres (status=queued)."""
+    conn.execute(
+        """
+        INSERT INTO runs (
+          id, site_id, site_url, list_name, source_type, criteria, notes, webhook_url,
+          status, message, created_at
+        ) VALUES (
+          %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'queued', %s, clock_timestamp()
+        )
+        """,
+        (
+            run_id,
+            site_id,
+            site_url,
+            list_name,
+            source_type,
+            json.dumps(criteria),
+            notes,
+            webhook_url,
+            message,
+        ),
+    )
+
+
+def delete_queued_run(conn: Connection, run_id: UUID) -> None:
+    conn.execute("DELETE FROM runs WHERE id = %s AND status = 'queued'", (run_id,))
+
+
+def count_queued_runs(conn: Connection) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM runs WHERE status = 'queued'",
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def queue_position_for_run(conn: Connection, run_id: UUID) -> int:
+    """1-based position among globally queued runs (FIFO by created_at, id)."""
+    row = conn.execute(
+        """
+        SELECT COUNT(*) FROM runs q
+        WHERE q.status = 'queued'
+          AND (q.created_at, q.id) <= (
+            SELECT created_at, id FROM runs WHERE id = %s
+          )
+        """,
+        (run_id,),
+    ).fetchone()
+    return max(1, int(row[0]) if row else 1)
+
+
+def claim_next_queued_run(conn: Connection) -> dict[str, Any] | None:
+    """Atomically claim the oldest queued run (FOR UPDATE SKIP LOCKED)."""
+    cur = conn.execute(
+        """
+        UPDATE runs
+        SET status = 'running',
+            started_at = COALESCE(started_at, NOW())
+        WHERE id = (
+          SELECT id FROM runs
+          WHERE status = 'queued'
+          ORDER BY created_at ASC, id ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT 1
+        )
+        RETURNING *
+        """
+    )
+    rows = _rows_to_dicts(cur)
+    return rows[0] if rows else None
+
+
+def claim_run_by_id(conn: Connection, run_id: UUID) -> dict[str, Any] | None:
+    """Atomically claim one queued run by id (used after POST /runs on Cloud Run)."""
+    cur = conn.execute(
+        """
+        UPDATE runs
+        SET status = 'running',
+            started_at = COALESCE(started_at, NOW())
+        WHERE id = %s AND status = 'queued'
+        RETURNING *
+        """,
+        (run_id,),
+    )
+    rows = _rows_to_dicts(cur)
+    return rows[0] if rows else None
+
+
+def mark_run_running(
+    conn: Connection,
+    run_id: UUID,
+    *,
+    message: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE runs
+        SET status = 'running',
+            started_at = COALESCE(started_at, NOW()),
+            message = COALESCE(%s, message)
+        WHERE id = %s AND status IN ('queued', 'running')
+        """,
+        (message, run_id),
+    )
+
+
+def get_in_progress_run_for_site(conn: Connection, site_id: str) -> dict[str, Any] | None:
+    """Return running run for site, else oldest queued run for site."""
+    cur = conn.execute(
+        """
+        SELECT * FROM runs
+        WHERE site_id = %s AND status IN ('queued', 'running')
+        ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at ASC
+        LIMIT 1
+        """,
+        (site_id,),
+    )
+    rows = _rows_to_dicts(cur)
+    return rows[0] if rows else None
+
+
+def list_in_progress_runs(conn: Connection) -> list[dict[str, Any]]:
+    cur = conn.execute(
+        """
+        SELECT * FROM runs
+        WHERE status IN ('queued', 'running')
+        ORDER BY created_at ASC
+        """
+    )
+    return _rows_to_dicts(cur)
+
+
+def finish_run(
+    conn: Connection,
+    *,
+    run_id: UUID,
+    status: str,
+    error: str | None = None,
+    message: str | None = None,
+) -> None:
+    """Mark an existing run terminal (completed or failed)."""
+    conn.execute(
+        """
+        UPDATE runs
+        SET status = %s,
+            error = %s,
+            message = COALESCE(%s, message),
+            finished_at = NOW()
+        WHERE id = %s
+        """,
+        (status, error, message, run_id),
+    )
+
+
 def persist_run_result(
     conn: Connection,
     *,
@@ -167,32 +362,36 @@ def persist_run_result(
     message: str | None = None,
     started_at: Any | None = None,
 ) -> None:
-    """Write a finished run record once (completed or failed)."""
-    conn.execute(
-        """
-        INSERT INTO runs (
-          id, site_id, site_url, list_name, source_type, criteria, notes, webhook_url,
-          status, error, message, started_at, finished_at
-        ) VALUES (
-          %s, %s, %s, %s, %s, %s::jsonb, %s, %s,
-          %s, %s, %s, COALESCE(%s, NOW()), NOW()
+    """Write a finished run record (update queued/running row or insert for tests)."""
+    existing = get_run(conn, run_id)
+    if existing is not None:
+        finish_run(conn, run_id=run_id, status=status, error=error, message=message)
+    else:
+        conn.execute(
+            """
+            INSERT INTO runs (
+              id, site_id, site_url, list_name, source_type, criteria, notes, webhook_url,
+              status, error, message, started_at, finished_at
+            ) VALUES (
+              %s, %s, %s, %s, %s, %s::jsonb, %s, %s,
+              %s, %s, %s, COALESCE(%s, NOW()), NOW()
+            )
+            """,
+            (
+                run_id,
+                site_id,
+                site_url,
+                list_name,
+                source_type,
+                json.dumps(criteria),
+                notes,
+                webhook_url,
+                status,
+                error,
+                message,
+                started_at,
+            ),
         )
-        """,
-        (
-            run_id,
-            site_id,
-            site_url,
-            list_name,
-            source_type,
-            json.dumps(criteria),
-            notes,
-            webhook_url,
-            status,
-            error,
-            message,
-            started_at,
-        ),
-    )
     from src.log.run_trace import log_run_progress
 
     log_run_progress(
